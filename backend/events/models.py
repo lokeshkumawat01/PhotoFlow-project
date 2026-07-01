@@ -3,6 +3,7 @@ from django.db import models
 from django.contrib.auth.models import User
 from django.utils import timezone
 from datetime import timedelta
+from pgvector.django import VectorField
 
 
 class Event(models.Model):
@@ -75,3 +76,23 @@ class Event(models.Model):
     def guest_access_url(self):
         from django.conf import settings
         return f"{settings.FRONTEND_BASE_URL}/event/{self.qr_token}"
+    
+class VIPProfile(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event = models.ForeignKey(
+        'events.Event',
+        on_delete=models.CASCADE,
+        related_name='vip_profiles'
+    )
+    name = models.CharField(max_length=100)
+    reference_embedding = VectorField(dimensions=512)  # FaceEmbedding/Guest jaisa hi 512-d
+    added_by_organizer_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'events_vipprofile'
+        indexes = [
+            models.Index(fields=['event']),
+        ]
+
+    def __str__(self):
+        return f"VIP: {self.name} ({self.event.name})"

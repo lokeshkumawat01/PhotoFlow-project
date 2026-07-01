@@ -24,6 +24,8 @@ venv/
 env/
 .venv/
 *.egg-info/
+.env
+
 
 # Django
 staticfiles/
@@ -44,3 +46,13 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Frontend / Next.js specific
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.vercel/
+frontend/*.tsbuildinfo
+frontend/next-env.d.ts
+frontend/coverage/

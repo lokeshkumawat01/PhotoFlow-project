@@ -20,7 +20,7 @@ def _signed_preview_url(storage_key: str) -> str:
     signer = TimestampSigner()
     token = signer.sign(storage_key)
     expiry = 600  # 10 minutes
-    return f"http://127.0.0.1:8000/api/photos/serve/?token={token}&max_age={expiry}"
+    return f"{settings.BACKEND_BASE_URL}/api/photos/serve/?token={token}&max_age={expiry}"
 
 
 class SelfieMatchView(APIView):

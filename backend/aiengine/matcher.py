@@ -1,15 +1,10 @@
 from photos.models import FaceEmbedding
+from pgvector.django import CosineDistance
+from events.models import VIPProfile
 
+VIP_MATCH_THRESHOLD = 0.35
 
 def find_matching_photos(event_id: str, query_embedding, threshold: float = 0.45):
-    """
-    event_id: which event's photos to search within
-    query_embedding: the guest's selfie embedding (numpy array or list, 512 numbers)
-    threshold: minimum similarity to count as a match (0 to 1, higher = stricter)
-
-    Returns: list of dicts [{'photo_id': ..., 'similarity': ...}, ...]
-    sorted by similarity, highest first.
-    """
     # pgvector's CosineDistance gives a DISTANCE (0 = identical, 2 = opposite),
     # not a similarity score, so we convert: similarity = 1 - distance.
     max_distance = 1 - threshold
@@ -37,3 +32,17 @@ def find_matching_photos(event_id: str, query_embedding, threshold: float = 0.45
     results = [{'photo_id': pid, 'similarity': sim} for pid, sim in best_per_photo.items()]
     results.sort(key=lambda r: r['similarity'], reverse=True)
     return results
+
+def match_vip(guest_embedding, event_id):
+    closest_vip = (
+        VIPProfile.objects
+        .filter(event_id=event_id)
+        .annotate(distance=CosineDistance('reference_embedding', guest_embedding))
+        .order_by('distance')
+        .first()
+    )
+
+    if closest_vip is not None and closest_vip.distance <= VIP_MATCH_THRESHOLD:
+        return closest_vip
+
+    return None

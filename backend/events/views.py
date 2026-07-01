@@ -3,9 +3,12 @@ from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, permissions 
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.throttling import ScopedRateThrottle
+from django.shortcuts import get_object_or_404
+from rest_framework.parsers import MultiPartParser, FormParser
+from .models import Event, VIPProfile
 
 from .models import Event
 from .qr_generator import generate_event_qr_bytes
@@ -85,3 +88,62 @@ class EventUpgradePlanView(APIView):
             "expires_at": event.qr_token_expires_at,
             "guest_access_url": event.guest_access_url,  # same rehta hai
         })
+    
+class VIPProfileUploadView(APIView):
+    """
+    Organizer ek reference photo upload karta hai VIP family member ki.
+    Face embedding nikal ke VIPProfile table mein store hota hai.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        name = request.data.get('name')
+        photo_file = request.FILES.get('reference_photo')
+
+        if not name or not photo_file:
+            return Response(
+                {"error": "name aur reference_photo dono required hain"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # existing face_engine function reuse — jaisa guest selfie ke liye use hota hai
+        embedding_result = embed_single_face(photo_file)
+
+        if embedding_result is None:
+            return Response(
+                {"error": "Photo mein clear face detect nahi hua, dusri photo try karo"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        vip = VIPProfile.objects.create(
+            id=uuid.uuid4(),
+            event=event,
+            name=name,
+            reference_embedding=embedding_result['embedding']
+        )
+
+        return Response(
+            {"id": str(vip.id), "name": vip.name, "message": "VIP profile added"},
+            status=status.HTTP_201_CREATED
+        )
+class VIPProfileListView(APIView):
+    
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        vips = event.vip_profiles.all().values('id', 'name', 'added_by_organizer_at')
+        return Response(list(vips))
+
+
+class VIPProfileDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, event_id, vip_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        vip = get_object_or_404(VIPProfile, id=vip_id, event=event)
+        vip.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
