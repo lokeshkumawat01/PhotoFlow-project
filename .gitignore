@@ -1,5 +1,8 @@
 # Sirf actual uploaded media/photos exclude karo
 backend/media/
+backend/test_album/
+backend/test2.JPG
+backend/test_gpu.py
 
 # Test binary files (agar accidentally track ho rahi hain)
 *.bin
