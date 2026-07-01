@@ -1,0 +1,231 @@
+import logging
+from django.conf import settings
+from django.core.signing import TimestampSigner
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status
+from rest_framework.parsers import MultiPartParser
+from django.core.exceptions import ValidationError
+
+from events.models import Event
+from photos.models import Photo
+from .models import Guest
+
+logger = logging.getLogger(__name__)
+
+MAX_SELFIE_BYTES = 10 * 1024 * 1024
+
+
+def _signed_preview_url(storage_key: str) -> str:
+    signer = TimestampSigner()
+    token = signer.sign(storage_key)
+    expiry = 600  # 10 minutes
+    return f"http://127.0.0.1:8000/api/photos/serve/?token={token}&max_age={expiry}"
+
+
+class SelfieMatchView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    parser_classes = [MultiPartParser]
+
+    def post(self, request, qr_token):
+        event = Event.objects.filter(qr_token=qr_token, is_active=True).first()
+        if not event:
+            return Response({"error": "Event not found or inactive"}, status=status.HTTP_404_NOT_FOUND)
+
+        selfie_file = request.FILES.get("selfie")
+        if not selfie_file:
+            return Response({"error": "No selfie provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if selfie_file.size == 0:
+            return Response(
+                {"error": "The selfie file appears to be empty. Please try again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if selfie_file.size > MAX_SELFIE_BYTES:
+            return Response({"error": "Selfie file too large"}, status=status.HTTP_400_BAD_REQUEST)
+
+        selfie_bytes = selfie_file.read()
+
+        from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr
+        from aiengine.face_engine import embed_single_face
+
+        try:
+            img = load_image_corrected(selfie_bytes)
+            cv2_image = pil_to_cv2_bgr(img)
+        except Exception as e:
+            logger.warning(f"Could not decode selfie image for event {qr_token}: {e}")
+            return Response(
+                {"error": "We couldn't read that image. Please try taking the selfie again."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            embedding = embed_single_face(cv2_image)
+        except Exception as e:
+            logger.exception(f"Face detection failed for event {qr_token}: {e}")
+            return Response(
+                {"error": "We had trouble processing your selfie. Please try again."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        del selfie_bytes, img, cv2_image
+
+        if embedding is None:
+            return Response(
+                {"error": "No clear face detected. Please try again with better lighting."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        guest = Guest.objects.create(event=event, selfie_embedding=embedding.tolist())
+
+        from aiengine.matcher import find_matching_photos
+        matches = find_matching_photos(str(event.id), embedding)
+
+        guest.matched_photo_ids = [m["photo_id"] for m in matches]
+        guest.save(update_fields=["matched_photo_ids"])
+
+        photo_map = {str(p.id): p for p in Photo.objects.filter(id__in=guest.matched_photo_ids)}
+
+        results = []
+        for m in matches:
+            photo = photo_map.get(m["photo_id"])
+            if not photo or not photo.storage_key_preview:
+                continue
+            results.append({
+                "photo_id": m["photo_id"],
+                "preview_url": _signed_preview_url(photo.storage_key_preview),
+                "similarity": round(m["similarity"], 3),
+            })
+
+        return Response({
+            "guest_id": str(guest.id),
+            "matched_count": len(results),
+            "photos": results,
+        })
+    
+class RequestHDView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request, photo_id):
+        guest_id = request.data.get("guest_id")
+
+        if not guest_id:
+            return Response({"error": "guest_id is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            guest = Guest.objects.filter(id=guest_id).first()
+        except (ValueError, ValidationError):
+            # guest_id wasn't even a valid UUID format
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not guest:
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            photo = Photo.objects.filter(id=photo_id, event_id=guest.event_id).first()
+        except (ValueError, ValidationError):
+            return Response({"error": "Photo not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if not photo or not photo.storage_key_hd:
+            return Response({"error": "Photo not found"}, status=status.HTTP_404_NOT_FOUND)
+
+        if str(photo_id) not in (guest.matched_photo_ids or []):
+            return Response({"error": "This photo is not in your matched set"}, status=status.HTTP_403_FORBIDDEN)
+
+        hd_url = _signed_preview_url(photo.storage_key_hd)
+        return Response({"hd_url": hd_url, "expires_in_seconds": 600})
+    
+class LivenessCheckView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr
+        from aiengine.liveness import check_blink_liveness
+
+        frames = []
+        for key in sorted(request.FILES.keys()):
+            file_bytes = request.FILES[key].read()
+            try:
+                img = load_image_corrected(file_bytes)
+                frames.append(pil_to_cv2_bgr(img))
+            except Exception:
+                continue
+
+        if len(frames) < 3:
+            return Response(
+                {"is_live": False, "reason": "Not enough frames captured."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        result = check_blink_liveness(frames)
+        return Response(result)
+    
+class DownloadAllPhotosView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        import io
+        import zipfile
+        from pathlib import Path
+        from django.conf import settings
+        from django.http import HttpResponse
+
+        guest_id = request.data.get("guest_id")
+        quality = request.data.get("quality", "preview")
+
+        guest = Guest.objects.filter(id=guest_id).first()
+        if not guest:
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+
+        photo_ids = guest.matched_photo_ids or []
+        if not photo_ids:
+            return Response({"error": "No matched photos to download"}, status=status.HTTP_400_BAD_REQUEST)
+
+        photos = Photo.objects.filter(id__in=photo_ids, event_id=guest.event_id)
+
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+            for photo in photos:
+                storage_key = photo.storage_key_hd if quality == "hd" else photo.storage_key_preview
+                if not storage_key:
+                    continue
+
+                full_path = Path(settings.MEDIA_ROOT) / storage_key
+                if not full_path.exists():
+                    continue
+
+                arcname = f"{photo.id}.jpg"
+                zip_file.write(full_path, arcname=arcname)
+
+        zip_buffer.seek(0)
+        response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
+        response["Content-Disposition"] = 'attachment; filename="my-photos.zip"'
+        return response
+    
+class LivenessFrameCheckView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr
+        from aiengine.liveness import get_ear_for_frame
+
+        frame_file = request.FILES.get("frame")
+        if not frame_file:
+            return Response({"error": "No frame provided"}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            img = load_image_corrected(frame_file.read())
+            cv2_image = pil_to_cv2_bgr(img)
+        except Exception:
+            return Response({"ear": None})
+
+        ear = get_ear_for_frame(cv2_image)
+        return Response({"ear": ear})

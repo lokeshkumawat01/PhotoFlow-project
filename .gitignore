@@ -1,0 +1,43 @@
+# Sirf actual uploaded media/photos exclude karo
+backend/media/
+
+# Test binary files (agar accidentally track ho rahi hain)
+*.bin
+
+# Database
+backend/db.sqlite3
+*.sqlite3
+
+# Environment variables
+.env
+.env.local
+.env.production
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+env/
+.venv/
+*.egg-info/
+
+# Django
+staticfiles/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+.DS_Store
+
+# AI models (agar heavy weight files hain aiengine mein)
+*.pt
+*.onnx
+*.pkl
+*.h5
+
+# IDE
+.vscode/
+.idea/
