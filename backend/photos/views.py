@@ -39,6 +39,7 @@ class EventUploadStatusView(APIView):
 class ServeSignedFileView(APIView):
     authentication_classes = []
     permission_classes = []
+    throttle_classes = []
 
     def get(self, request):
         token = request.query_params.get('token')

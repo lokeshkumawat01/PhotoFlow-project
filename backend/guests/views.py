@@ -10,6 +10,7 @@ from django.core.exceptions import ValidationError
 from events.models import Event
 from photos.models import Photo
 from .models import Guest
+from aiengine.matcher import match_vip, find_matching_photos
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +79,47 @@ class SelfieMatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # --- VIP check happens FIRST, before normal photo matching ---
+        # If this face matches a pre-registered VIP/family profile, skip
+        # the normal similarity search entirely and grant access to the
+        # whole event album instead of just matched photos.
+        vip_match = match_vip(embedding, str(event.id))
+
+        if vip_match is not None:
+            guest = Guest.objects.create(
+                event=event,
+                selfie_embedding=embedding.tolist(),
+                is_vip=True,
+                vip_name=vip_match.name,
+            )
+
+            all_photos = Photo.objects.filter(
+                event=event, status="done"
+            ).exclude(storage_key_preview="")
+
+            guest.matched_photo_ids = [str(p.id) for p in all_photos]
+            guest.save(update_fields=["matched_photo_ids"])
+
+            results = [
+                {
+                    "photo_id": str(p.id),
+                    "preview_url": _signed_preview_url(p.storage_key_preview),
+                    "similarity": None,  # not applicable for VIP access
+                }
+                for p in all_photos
+            ]
+
+            return Response({
+                "guest_id": str(guest.id),
+                "is_vip": True,
+                "vip_name": vip_match.name,
+                "matched_count": len(results),
+                "photos": results,
+            })
+
+        # --- Normal guest flow: face-similarity based photo matching ---
         guest = Guest.objects.create(event=event, selfie_embedding=embedding.tolist())
 
-        from aiengine.matcher import find_matching_photos
         matches = find_matching_photos(str(event.id), embedding)
 
         guest.matched_photo_ids = [m["photo_id"] for m in matches]
@@ -101,10 +140,12 @@ class SelfieMatchView(APIView):
 
         return Response({
             "guest_id": str(guest.id),
+            "is_vip": False,
             "matched_count": len(results),
             "photos": results,
         })
-    
+
+
 class RequestHDView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -137,7 +178,8 @@ class RequestHDView(APIView):
 
         hd_url = _signed_preview_url(photo.storage_key_hd)
         return Response({"hd_url": hd_url, "expires_in_seconds": 600})
-    
+
+
 class LivenessCheckView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -164,7 +206,8 @@ class LivenessCheckView(APIView):
 
         result = check_blink_liveness(frames)
         return Response(result)
-    
+
+
 class DownloadAllPhotosView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -207,11 +250,13 @@ class DownloadAllPhotosView(APIView):
         response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
         response["Content-Disposition"] = 'attachment; filename="my-photos.zip"'
         return response
-    
+
+
 class LivenessFrameCheckView(APIView):
     authentication_classes = []
     permission_classes = []
     parser_classes = [MultiPartParser]
+    throttle_classes = []
 
     def post(self, request):
         from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr

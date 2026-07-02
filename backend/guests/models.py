@@ -18,6 +18,9 @@ class Guest(models.Model):
     # Match hui photos ki list cache karke rakhte hain (baar baar search na karna pade)
     matched_photo_ids = models.JSONField(default=list, blank=True)
 
+    is_vip = models.BooleanField(default=False)         
+    vip_name = models.CharField(max_length=100, blank=True) 
+
     created_at = models.DateTimeField(auto_now_add=True)
     last_accessed_at = models.DateTimeField(auto_now=True)
 

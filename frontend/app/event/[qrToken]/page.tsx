@@ -30,6 +30,8 @@ export default function EventPage({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const touchStartX = useRef<number | null>(null);
+  const touchEndX = useRef<number | null>(null);
 
   const [status, setStatus] = useState<PageStatus>("camera");
   const [cameraReady, setCameraReady] = useState(false);
@@ -38,6 +40,8 @@ export default function EventPage({
   const [photos, setPhotos] = useState<MatchedPhoto[]>([]);
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
   const [guestId, setGuestId] = useState("");
+  const [isVip, setIsVip] = useState(false);
+   const [vipName, setVipName] = useState("");
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
@@ -45,6 +49,23 @@ export default function EventPage({
     startCamera();
     return () => stopCamera();
   }, []);
+
+  useEffect(() => {
+  if (lightboxIndex === null) return;
+
+  function handleKeyDown(e: KeyboardEvent) {
+    if (e.key === "ArrowRight") {
+      showNextPhoto();
+    } else if (e.key === "ArrowLeft") {
+      showPreviousPhoto();
+    } else if (e.key === "Escape") {
+      closeLightbox();
+    }
+  }
+
+  window.addEventListener("keydown", handleKeyDown);
+  return () => window.removeEventListener("keydown", handleKeyDown);
+}, [lightboxIndex, photos.length]);
 
   async function startCamera() {
     try {
@@ -201,6 +222,8 @@ export default function EventPage({
         }
 
         setGuestId(data.guest_id);
+        setIsVip(Boolean(data.is_vip));
+        setVipName(data.vip_name || "");
         setPhotos(data.photos);
         setStatus("results");
         return;
@@ -227,38 +250,52 @@ export default function EventPage({
   async function handleDownloadAll() {
     setDownloadingAll(true);
     try {
-      const response = await fetch(`${API_BASE_URL}/api/guest/download-all/`, {
+      const res = await fetch(`${API_BASE_URL}/api/guest/download-all/`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ guest_id: guestId, quality: "preview" }),
+        body: JSON.stringify({ guest_id: guestId, quality: "hd" }),   // <-- changed from "preview"
       });
-      const blob = await response.blob();
+      if (!res.ok) throw new Error("Download failed");
+
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "my-photos.zip";
-      a.click();
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "my-photos.zip";
+      link.click();
       URL.revokeObjectURL(url);
     } catch {
-      setErrorMessage("Could not download photos. Please try again.");
+      setErrorMessage("Could not download your photos. Please try again.");
     }
     setDownloadingAll(false);
   }
 
+
   async function handleDownloadSingle(previewUrl: string, photoId: string) {
-  try {
-    const response = await fetch(previewUrl);
-    const blob = await response.blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `${photoId}.jpg`;
-    a.click();
-    URL.revokeObjectURL(url);
-  } catch {
-    setErrorMessage("Could not download this photo. Please try again.");
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/guest/photo/${photoId}/request-hd/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ guest_id: guestId }),
+      });
+
+      // Fall back to the preview image if HD isn't available for some reason
+      // (e.g. the original file is missing) so the download still works.
+      const downloadUrl = res.ok ? (await res.json()).hd_url : previewUrl;
+
+      const imgRes = await fetch(downloadUrl);
+      const blob = await imgRes.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `photo-${photoId}.jpg`;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch {
+      setErrorMessage("Could not download this photo. Please try again.");
+    }
   }
-}
+
 function closeLightbox() {
   setLightboxIndex(null);
 }
@@ -272,6 +309,34 @@ function showPreviousPhoto() {
   if (lightboxIndex === null) return;
   setLightboxIndex((lightboxIndex - 1 + photos.length) % photos.length);
 }
+
+function handleTouchStart(e: React.TouchEvent) {
+  touchEndX.current = null;
+  touchStartX.current = e.targetTouches[0].clientX;
+}
+
+function handleTouchMove(e: React.TouchEvent) {
+  touchEndX.current = e.targetTouches[0].clientX;
+}
+
+function handleTouchEnd() {
+  if (touchStartX.current === null || touchEndX.current === null) return;
+
+  const distance = touchStartX.current - touchEndX.current;
+  const minSwipeDistance = 50; // pixels -- avoids triggering on tiny accidental drags
+
+  if (distance > minSwipeDistance) {
+    // swiped left -> show next photo (like a native gallery)
+    showNextPhoto();
+  } else if (distance < -minSwipeDistance) {
+    // swiped right -> show previous photo
+    showPreviousPhoto();
+  }
+
+  touchStartX.current = null;
+  touchEndX.current = null;
+}
+
 
   return (
     <div className="bg-white min-h-screen">
@@ -413,12 +478,20 @@ function showPreviousPhoto() {
           <div>
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-semibold text-ink">
-                {photos.length} Photo{photos.length > 1 ? "s" : ""} Found
+                {isVip
+                  ? `Welcome, ${vipName}!`
+                  : `${photos.length} Photo${photos.length > 1 ? "s" : ""} Found`}
               </h2>
               <span className="text-xs font-semibold text-coral-dark bg-coral-tint rounded-full px-3 py-1">
-                Matched to you
+                {isVip ? "VIP Access · Full Album" : "Matched to you"}
               </span>
             </div>
+
+            {isVip && (
+              <p className="text-sm text-coral-dark bg-coral-tint rounded-xl px-4 py-3 mb-6 text-center leading-relaxed">
+                You have full access to all {photos.length} photos from this event.
+              </p>
+            )}
 
             <button
               onClick={handleDownloadAll}
@@ -473,31 +546,41 @@ function showPreviousPhoto() {
           <div
             className="fixed inset-0 z-50 bg-black/90 flex items-center justify-center"
             onClick={closeLightbox}
+            onTouchStart={handleTouchStart}
+            onTouchMove={handleTouchMove}
+            onTouchEnd={handleTouchEnd}
           >
             <button
               onClick={closeLightbox}
-              className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-xl transition-colors"
+              className="absolute top-4 right-4 w-10 h-10 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
               aria-label="Close"
             >
-              ✕
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6L6 18" />
+                <path d="M6 6l12 12" />
+              </svg>
             </button>
 
+            {/* Arrow buttons -- hidden on touch devices (sm and below), swipe is used instead there */}
             <button
               onClick={(e) => {
                 e.stopPropagation();
                 showPreviousPhoto();
               }}
-              className="absolute left-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-2xl transition-colors"
+              className="hidden sm:flex absolute left-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 items-center justify-center transition-colors"
               aria-label="Previous photo"
             >
-              ‹
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 18l-6-6 6-6" />
+              </svg>
             </button>
 
             <img
               src={photos[lightboxIndex].preview_url}
               alt="Matched photo, enlarged"
               onClick={(e) => e.stopPropagation()}
-              className="max-w-[90vw] max-h-[85vh] object-contain rounded-lg"
+              className="max-w-[90vw] max-h-[85vh] object-contain rounded-lg select-none"
+              draggable={false}
             />
 
             <button
@@ -505,11 +588,18 @@ function showPreviousPhoto() {
                 e.stopPropagation();
                 showNextPhoto();
               }}
-              className="absolute right-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-2xl transition-colors"
+              className="hidden sm:flex absolute right-4 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/10 hover:bg-white/20 items-center justify-center transition-colors"
               aria-label="Next photo"
             >
-              ›
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 18l6-6-6-6" />
+              </svg>
             </button>
+
+            {/* Small position indicator -- helps on mobile where arrow buttons are hidden */}
+            <p className="sm:hidden absolute top-4 left-1/2 -translate-x-1/2 text-white/70 text-xs">
+              {lightboxIndex + 1} / {photos.length}
+            </p>
 
             <button
               onClick={(e) => {
@@ -523,7 +613,6 @@ function showPreviousPhoto() {
           </div>
         )}
       </div>
-
       <SiteFooter />
     </div>
   );

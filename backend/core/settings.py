@@ -48,6 +48,7 @@ INSTALLED_APPS = [
     'guests',
     'aiengine',
     'highlights',
+    'accounts',
 ]
 
 MIDDLEWARE = [
@@ -151,6 +152,9 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 50
 
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'core.exception_handlers.custom_exception_handler',
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
@@ -161,5 +165,15 @@ REST_FRAMEWORK = {
         # event's photos or burn GPU compute gets capped here.
         'anon': '30/minute',
         'user': '60/minute',
+        'auth_register': '5/hour',
+        'event_create': '20/hour',
     },
+}
+
+from datetime import timedelta
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'SIGNING_KEY': os.environ.get('JWT_SIGNING_KEY', SECRET_KEY),
 }
