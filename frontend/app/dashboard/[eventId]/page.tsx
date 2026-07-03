@@ -64,6 +64,14 @@ export default function EventDashboardPage({
   const [editingVipId, setEditingVipId] = useState<string | null>(null);
   const [editingVipName, setEditingVipName] = useState("");
 
+  const [liveSyncSupported, setLiveSyncSupported] = useState(false);
+  const [liveSyncActive, setLiveSyncActive] = useState(false);
+  const [liveSyncCount, setLiveSyncCount] = useState(0);
+  const [liveSyncError, setLiveSyncError] = useState("");
+  const liveSyncSeenFiles = useRef<Set<string>>(new Set());
+  const liveSyncIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fallbackFileInputRef = useRef<HTMLInputElement>(null);
+
   // --- Generate a styled QR preview whenever style/text/logo changes ---
   async function generateQrPreview() {
     setQrGenerating(true);
@@ -356,6 +364,91 @@ export default function EventDashboardPage({
     }
   }
 
+  // Feature detection on mount ---
+  useEffect(() => {
+    setLiveSyncSupported(typeof (window as any).showDirectoryPicker === "function");
+  }, []);
+
+  async function uploadSinglePhoto(file: File) {
+    const formData = new FormData();
+    formData.append("photo", file);
+    const res = await authFetch(`/api/events/${eventId}/upload-single/`, {
+      method: "POST",
+      body: formData,
+    });
+    return res.ok;
+  }
+
+  async function startLiveSync() {
+    setLiveSyncError("");
+    try {
+      // @ts-ignore -- showDirectoryPicker isn't in default TS lib yet
+      const dirHandle = await window.showDirectoryPicker();
+
+      setLiveSyncActive(true);
+      liveSyncSeenFiles.current.clear();
+      setLiveSyncCount(0);
+
+      liveSyncIntervalRef.current = setInterval(async () => {
+        try {
+          for await (const entry of (dirHandle as any).values()) {
+            if (entry.kind !== "file") continue;
+            if (liveSyncSeenFiles.current.has(entry.name)) continue;
+
+            const isImage = /\.(jpe?g|png|heic)$/i.test(entry.name);
+            if (!isImage) continue;
+
+            liveSyncSeenFiles.current.add(entry.name);
+            const file = await entry.getFile();
+            const success = await uploadSinglePhoto(file);
+            if (success) {
+              setLiveSyncCount((prev) => prev + 1);
+            }
+          }
+        } catch {
+          // A single poll cycle failing shouldn't stop the whole session --
+          // it'll just retry on the next interval
+        }
+      }, 3000);
+    } catch (err) {
+      // User cancelled the folder picker -- not an error worth surfacing
+      setLiveSyncActive(false);
+    }
+  }
+
+  function stopLiveSync() {
+    if (liveSyncIntervalRef.current) {
+      clearInterval(liveSyncIntervalRef.current);
+      liveSyncIntervalRef.current = null;
+    }
+    setLiveSyncActive(false);
+  }
+
+  // Clean up the interval if the organizer navigates away mid-sync
+  useEffect(() => {
+    return () => {
+      if (liveSyncIntervalRef.current) clearInterval(liveSyncIntervalRef.current);
+    };
+  }, []);
+
+  async function handleFallbackFilesSelected(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setLiveSyncActive(true);
+    let uploaded = 0;
+
+    for (const file of Array.from(files)) {
+      const success = await uploadSinglePhoto(file);
+      if (success) uploaded++;
+    }
+
+    setLiveSyncCount((prev) => prev + uploaded);
+    setLiveSyncActive(false);
+    if (fallbackFileInputRef.current) fallbackFileInputRef.current.value = "";
+  }
+
+
   const progressPercent =
     status && status.total > 0
       ? Math.round((status.done / status.total) * 100)
@@ -465,6 +558,83 @@ export default function EventDashboardPage({
             )}
           </div>
         )}
+
+        <div className="mt-10 rounded-2xl border border-hairline p-6 sm:p-8">
+          <div className="flex items-center gap-2 mb-1">
+            <svg className="text-coral" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" />
+            </svg>
+            <h2 className="text-lg font-semibold text-ink">Live Sync</h2>
+          </div>
+
+          {liveSyncSupported ? (
+            <>
+              <p className="text-sm text-muted mb-5 leading-relaxed">
+                Point this at the folder your camera transfers photos to (via its WiFi
+                app). New photos upload automatically as they arrive — no need to wait
+                until the event ends.
+              </p>
+
+              {!liveSyncActive ? (
+                <button
+                  onClick={startLiveSync}
+                  className="focus-ring btn-primary w-full rounded-full px-5 py-3 text-sm font-semibold"
+                >
+                  Enable Live Sync
+                </button>
+              ) : (
+                <div>
+                  <div className="flex items-center gap-2 text-sm text-coral-dark font-medium mb-3">
+                    <span className="w-2 h-2 rounded-full bg-coral animate-pulse" />
+                    Live Sync active — {liveSyncCount} photo{liveSyncCount !== 1 ? "s" : ""} synced
+                  </div>
+                  <button
+                    onClick={stopLiveSync}
+                    className="w-full rounded-full border border-hairline px-5 py-2.5 text-sm text-ink hover:border-coral transition-colors"
+                  >
+                    Stop Live Sync
+                  </button>
+                  <p className="text-xs text-muted mt-3">
+                    Keep this browser tab open while syncing.
+                  </p>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <p className="text-sm text-muted mb-5 leading-relaxed">
+                Live Sync works best in Chrome or Edge. In this browser, you can still
+                upload new photos in batches as the event goes on:
+              </p>
+
+              <div
+                onClick={() => fallbackFileInputRef.current?.click()}
+                className="lift-on-hover cursor-pointer rounded-xl border-2 border-dashed border-hairline hover:border-coral bg-coral-tint/40 p-6 text-center transition-colors"
+              >
+                <p className="text-sm font-semibold text-ink">
+                  {liveSyncActive ? "Uploading..." : "Select new photos to upload"}
+                </p>
+                <input
+                  ref={fallbackFileInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleFallbackFilesSelected}
+                  className="hidden"
+                />
+              </div>
+
+              {liveSyncCount > 0 && (
+                <p className="text-sm text-coral-dark font-medium mt-3">
+                  {liveSyncCount} photo{liveSyncCount !== 1 ? "s" : ""} synced so far
+                </p>
+              )}
+            </>
+          )}
+
+          {liveSyncError && <p className="text-red-600 text-sm mt-3">{liveSyncError}</p>}
+        </div>
+
 
         {/* ============================================================
             QR CODE CUSTOMIZATION SECTION

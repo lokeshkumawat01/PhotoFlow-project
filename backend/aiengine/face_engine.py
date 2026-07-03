@@ -1,11 +1,3 @@
-"""
-aiengine/face_engine.py
-
-Yeh file 2 kaam karti hai:
-1. Photo mein chehre dhundhna (detection)
-2. Har chehre ka 512-d fingerprint banana (embedding)
-"""
-
 import os
 import ctypes
 import logging
@@ -14,13 +6,6 @@ logger = logging.getLogger(__name__)
 
 
 def _add_nvidia_dll_paths():
-    """
-    pip se install ki gayi NVIDIA CUDA/cuDNN DLLs (cu12 packages) ko
-    explicitly Windows DLL search path mein add karta hai, AUR unko
-    explicitly ctypes se preload bhi karta hai (zaroori hai kyunki
-    onnxruntime ki CUDA provider DLL lazy-load hoti hai aur
-    add_dll_directory() ka effect Windows kabhi-kabhi miss kar deta hai).
-    """
     try:
         import nvidia.cuda_runtime, nvidia.cublas, nvidia.cufft, nvidia.cudnn
 
@@ -59,16 +44,19 @@ def _add_nvidia_dll_paths():
                     break
 
     except ImportError:
-        pass  # Linux/production server pe yeh packages nahi honge, normal CUDA install use hoga
+        pass  
 
 
 _add_nvidia_dll_paths()
 
 import threading
+import time
 import numpy as np
 
 _model_lock = threading.Lock()
 _face_app = None
+_last_used_time = None
+IDLE_TIMEOUT_SECONDS = 600  
 
 
 def _get_providers():
@@ -83,16 +71,16 @@ def _get_providers():
 
 
 def get_face_app():
-    """
-    InsightFace model ko load karta hai -- sirf ek baar (pehli call pe).
-    Uske baad har call usi loaded model ko reuse karti hai (fast).
-    """
-    global _face_app
-    if _face_app is not None:
-        return _face_app
+    global _face_app, _last_used_time
 
     with _model_lock:
+        if _face_app is not None and _last_used_time is not None:
+            if time.time() - _last_used_time > IDLE_TIMEOUT_SECONDS:
+                logger.info("Face model idle timeout reached -- unloading to free resources.")
+                _face_app = None
+
         if _face_app is not None:
+            _last_used_time = time.time()
             return _face_app
 
         from insightface.app import FaceAnalysis
@@ -104,11 +92,11 @@ def get_face_app():
         app.prepare(ctx_id=0, det_size=(640, 640))
 
         _face_app = app
+        _last_used_time = time.time()
         return _face_app
 
 
 class DetectedFace:
-    """Ek detected chehre ka data -- fingerprint + location + confidence."""
     def __init__(self, embedding, bbox, confidence):
         self.embedding = embedding
         self.bbox = bbox
@@ -116,9 +104,6 @@ class DetectedFace:
 
 
 def detect_and_embed_faces(image_bgr: np.ndarray) -> list[DetectedFace]:
-    """
-    Ek photo lo, usme jitne chehre hain sabka fingerprint nikal kar do.
-    """
     app = get_face_app()
     faces = app.get(image_bgr)
 

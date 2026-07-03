@@ -167,6 +167,7 @@ REST_FRAMEWORK = {
         'user': '60/minute',
         'auth_register': '5/hour',
         'event_create': '20/hour',
+        'live_photo_upload': '120/minute', 
     },
 }
 
