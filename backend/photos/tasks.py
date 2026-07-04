@@ -155,6 +155,14 @@ def process_single_photo(self, photo_id: str, temp_file_path: str):
         photo.processed_at = timezone.now()
         photo.save()
 
+        from aiengine.matcher import match_guests_for_new_photo, add_photo_to_matched_guests
+
+        face_embeddings = [fe.embedding for fe in detected_faces]  # jo bhi variable-name aapke code mein embeddings ka hai
+        if face_embeddings:
+            matched_guest_ids = match_guests_for_new_photo(str(photo.event_id), face_embeddings)
+            if matched_guest_ids:
+                add_photo_to_matched_guests(str(photo.id), matched_guest_ids)
+
         logger.info(f"Photo {photo_id}: done, {len(detected_faces)} face(s) found")
 
         # Clean up the temp extracted file now that it's been read and

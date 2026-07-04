@@ -1,6 +1,7 @@
 import logging
 import uuid
 import tempfile
+import hashlib 
 from pathlib import Path
 from django.conf import settings
 from rest_framework.views import APIView
@@ -215,10 +216,24 @@ class SinglePhotoUploadView(APIView):
             tmp.write(file_bytes)
             temp_file_path = tmp.name
  
+        file_hash = hashlib.sha256(file_bytes).hexdigest()
+ 
+        # If this exact photo was already uploaded for this event (e.g. the
+        # camera-transfer software re-sent it, or Live Sync retried after a
+        # network blip), don't crash -- just report it as already-synced.
+        existing_photo = Photo.objects.filter(event=event, file_hash=file_hash).first()
+        if existing_photo:
+            return Response({
+                "photo_id": str(existing_photo.id),
+                "status": existing_photo.status,
+                "duplicate": True,
+            }, status=status.HTTP_200_OK)
+ 
         photo = Photo.objects.create(
             id=uuid.uuid4(),
             event=event,
             original_filename=photo_file.name,
+            file_hash=file_hash,
             status='queued',
         )
  

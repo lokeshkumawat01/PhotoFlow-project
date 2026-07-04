@@ -274,3 +274,47 @@ class LivenessFrameCheckView(APIView):
 
         ear = get_ear_for_frame(cv2_image)
         return Response({"ear": ear})
+    
+class CheckNewPhotosView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    throttle_classes = []  
+ 
+    def get(self, request, guest_id):
+        try:
+            guest = Guest.objects.filter(id=guest_id).first()
+        except (ValueError, ValidationError):
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        if not guest:
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        try:
+            known_count = int(request.query_params.get('known_count', 0))
+        except ValueError:
+            known_count = 0
+ 
+        current_ids = guest.matched_photo_ids or []
+        total_count = len(current_ids)
+ 
+        if total_count <= known_count:
+            return Response({"has_new": False, "total_count": total_count})
+ 
+        new_ids = current_ids[known_count:]
+        new_photos = Photo.objects.filter(id__in=new_ids).exclude(storage_key_preview="")
+ 
+        from .views import _signed_preview_url  
+ 
+        results = [
+            {
+                "photo_id": str(p.id),
+                "preview_url": _signed_preview_url(p.storage_key_preview),
+            }
+            for p in new_photos
+        ]
+ 
+        return Response({
+            "has_new": True,
+            "total_count": total_count,
+            "new_photos": results,
+        })

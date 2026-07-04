@@ -376,6 +376,10 @@ export default function EventDashboardPage({
       method: "POST",
       body: formData,
     });
+    if (!res.ok) {
+      const errorText = await res.text().catch(() => "");
+      console.error("Live Sync: upload failed", res.status, errorText);
+    }
     return res.ok;
   }
 
@@ -391,27 +395,34 @@ export default function EventDashboardPage({
 
       liveSyncIntervalRef.current = setInterval(async () => {
         try {
+          let filesSeenThisTick = 0;
           for await (const entry of (dirHandle as any).values()) {
+            filesSeenThisTick++;
             if (entry.kind !== "file") continue;
             if (liveSyncSeenFiles.current.has(entry.name)) continue;
 
             const isImage = /\.(jpe?g|png|heic)$/i.test(entry.name);
-            if (!isImage) continue;
+            if (!isImage) {
+              console.log("Live Sync: skipping non-image file", entry.name);
+              continue;
+            }
 
+            console.log("Live Sync: found new file, uploading", entry.name);
             liveSyncSeenFiles.current.add(entry.name);
             const file = await entry.getFile();
             const success = await uploadSinglePhoto(file);
+            console.log("Live Sync: upload result for", entry.name, "=", success);
             if (success) {
               setLiveSyncCount((prev) => prev + 1);
             }
           }
-        } catch {
-          // A single poll cycle failing shouldn't stop the whole session --
-          // it'll just retry on the next interval
+          console.log(`Live Sync: poll tick complete, ${filesSeenThisTick} entries in folder`);
+        } catch (err) {
+          console.error("Live Sync: poll cycle error", err);
         }
       }, 3000);
     } catch (err) {
-      // User cancelled the folder picker -- not an error worth surfacing
+      console.error("Live Sync: could not start (folder picker cancelled or unsupported)", err);
       setLiveSyncActive(false);
     }
   }
@@ -447,7 +458,6 @@ export default function EventDashboardPage({
     setLiveSyncActive(false);
     if (fallbackFileInputRef.current) fallbackFileInputRef.current.value = "";
   }
-
 
   const progressPercent =
     status && status.total > 0
