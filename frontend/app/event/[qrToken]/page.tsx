@@ -41,9 +41,18 @@ export default function EventPage({
   const [capturedPreview, setCapturedPreview] = useState<string | null>(null);
   const [guestId, setGuestId] = useState("");
   const [isVip, setIsVip] = useState(false);
-   const [vipName, setVipName] = useState("");
+  const [vipName, setVipName] = useState("");
   const [downloadingAll, setDownloadingAll] = useState(false);
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  const [newPhotoToast, setNewPhotoToast] = useState<string>("");
+  const pollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [reelStatus, setReelStatus] = useState<"idle" | "queued" | "processing" | "done" | "failed">("idle");
+  const [reelId, setReelId] = useState<string | null>(null);
+  const [reelUrl, setReelUrl] = useState<string | null>(null);
+  const [reelError, setReelError] = useState("");
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedPhotoIds, setSelectedPhotoIds] = useState<Set<string>>(new Set());
+  
 
   useEffect(() => {
     startCamera();
@@ -51,7 +60,35 @@ export default function EventPage({
   }, []);
 
   useEffect(() => {
+    if (status !== "results" || !guestId) return;
+
+    pollIntervalRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/guest/${guestId}/check-new-photos/?known_count=${photos.length}`
+        );
+        if (!res.ok) return;
+
+        const data = await res.json();
+        if (data.has_new && data.new_photos?.length > 0) {
+          setPhotos((prev) => [...prev, ...data.new_photos]);
+          setNewPhotoToast(
+            `${data.new_photos.length} new photo${data.new_photos.length > 1 ? "s" : ""} just added!`
+          );
+          setTimeout(() => setNewPhotoToast(""), 4000);
+        }
+      } catch {
+      }
+    }, 6000);
+
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, [status, guestId, photos.length]);
+
+  useEffect(() => {
   if (lightboxIndex === null) return;
+
 
   function handleKeyDown(e: KeyboardEvent) {
     if (e.key === "ArrowRight") {
@@ -66,6 +103,30 @@ export default function EventPage({
   window.addEventListener("keydown", handleKeyDown);
   return () => window.removeEventListener("keydown", handleKeyDown);
 }, [lightboxIndex, photos.length]);
+
+  useEffect(() => {
+    if (!reelId || reelStatus === "done" || reelStatus === "failed" || reelStatus === "idle") return;
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE_URL}/api/highlights/${reelId}/status/?guest_id=${guestId}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+
+        setReelStatus(data.status);
+        if (data.status === "done" && data.video_url) {
+          setReelUrl(data.video_url);
+        }
+      } catch {
+        // ignore network blips, next poll will retry
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [reelId, reelStatus, guestId]);
+
 
   async function startCamera() {
     try {
@@ -104,9 +165,59 @@ export default function EventPage({
     }
   }
 
+  async function handleGenerateReel() {
+    setReelStatus("queued");
+    setReelError("");
+
+    const body: { guest_id: string; photo_ids?: string[] } = { guest_id: guestId };
+
+    if (selectionMode) {
+      if (selectedPhotoIds.size < 3) {
+        setReelStatus("idle");
+        setReelError("Please select at least 3 photos.");
+        return;
+      }
+      body.photo_ids = Array.from(selectedPhotoIds);
+    }
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/highlights/generate/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setReelStatus("idle");
+        setReelError(data.error || "Could not start generating your reel.");
+        return;
+      }
+
+      setReelId(data.reel_id);
+      setReelStatus(data.status);
+    } catch {
+      setReelStatus("idle");
+      setReelError("Could not connect to the server.");
+    }
+  }
+
+
   function stopCamera() {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
+  }
+
+  function togglePhotoSelection(photoId: string) {
+    setSelectedPhotoIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(photoId)) {
+        next.delete(photoId);
+      } else {
+        next.add(photoId);
+      }
+      return next;
+    });
   }
 
   function captureFrameBlob(): Promise<Blob | null> {
@@ -476,6 +587,12 @@ function handleTouchEnd() {
 
         {status === "results" && (
           <div>
+            {newPhotoToast && (
+              <div className="fixed top-6 left-1/2 -translate-x-1/2 z-50 bg-ink text-white text-sm font-medium px-5 py-3 rounded-full shadow-lg flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-coral animate-pulse" />
+                {newPhotoToast}
+              </div>
+            )}
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-lg font-semibold text-ink">
                 {isVip
@@ -492,6 +609,91 @@ function handleTouchEnd() {
                 You have full access to all {photos.length} photos from this event.
               </p>
             )}
+
+            {/* ============================================================
+                HIGHLIGHT REEL SECTION -- placed above "Download all photos"
+               ============================================================ */}
+            <div className="mb-6 bg-coral-tint rounded-2xl p-6 border border-hairline text-center">
+              <h3 className="text-lg font-bold text-ink mb-2">Create a Video Story</h3>
+              <p className="text-sm text-muted mb-4">
+                We'll stitch your matched photos into a short 9:16 video you can share.
+              </p>
+
+              
+              {reelStatus === "idle" && (
+                <>
+                  <div className="flex gap-2 mb-4 rounded-full bg-white/60 p-1 max-w-xs mx-auto">
+                    <button
+                      onClick={() => {
+                        setSelectionMode(false);
+                        setSelectedPhotoIds(new Set());
+                      }}
+                      className={`flex-1 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                        !selectionMode ? "bg-white text-coral-dark shadow-sm" : "text-muted"
+                      }`}
+                    >
+                      Auto-select
+                    </button>
+                    <button
+                      onClick={() => setSelectionMode(true)}
+                      className={`flex-1 rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
+                        selectionMode ? "bg-white text-coral-dark shadow-sm" : "text-muted"
+                      }`}
+                    >
+                      Choose myself
+                    </button>
+                  </div>
+
+                  {selectionMode && (
+                    <p className="text-xs text-muted mb-3">
+                      {selectedPhotoIds.size} photo{selectedPhotoIds.size !== 1 ? "s" : ""} selected —
+                      tap photos below to choose
+                    </p>
+                  )}
+
+                  <button
+                    onClick={handleGenerateReel}
+                    disabled={selectionMode && selectedPhotoIds.size < 3}
+                    className="focus-ring btn-secondary rounded-full px-5 py-2.5 font-semibold text-sm disabled:opacity-40"
+                  >
+                    Generate Highlight Reel
+                  </button>
+                  {reelError && <p className="text-red-600 text-sm mt-3">{reelError}</p>}
+                </>
+              )}
+
+              {(reelStatus === "queued" || reelStatus === "processing") && (
+                <div className="flex items-center justify-center gap-3">
+                  <div className="w-5 h-5 border-2 border-coral border-t-transparent rounded-full animate-spin" />
+                  <span className="text-sm font-semibold text-coral-dark">
+                    {reelStatus === "queued" ? "Waiting in line..." : "Editing your video..."}
+                  </span>
+                </div>
+              )}
+
+              {reelStatus === "failed" && (
+                <p className="text-sm text-red-600">
+                  Couldn't create your reel this time (need at least 3 matched photos).
+                </p>
+              )}
+
+              {reelStatus === "done" && reelUrl && (
+                <div className="mt-4">
+                  <video
+                    src={reelUrl}
+                    controls
+                    className="w-full max-w-xs mx-auto rounded-xl shadow-md mb-4 aspect-[9/16] bg-black"
+                  />
+                  <a
+                    href={reelUrl}
+                    download="My_PhotoFlow_Reel.mp4"
+                    className="focus-ring btn-primary rounded-full px-5 py-2.5 font-semibold text-sm inline-block"
+                  >
+                    Download Video
+                  </a>
+                </div>
+              )}
+            </div>
 
             <button
               onClick={handleDownloadAll}
@@ -510,9 +712,30 @@ function handleTouchEnd() {
                   <img
                     src={photo.preview_url}
                     alt="Matched photo"
-                    onClick={() => setLightboxIndex(index)}
-                    className="w-full aspect-square object-cover cursor-pointer"
+                    onClick={() =>
+                      selectionMode ? togglePhotoSelection(photo.photo_id) : setLightboxIndex(index)
+                    }
+                    className={`w-full aspect-square object-cover cursor-pointer transition-opacity ${
+                      selectionMode && !selectedPhotoIds.has(photo.photo_id) ? "opacity-50" : ""
+                    }`}
                   />
+
+                  {selectionMode && (
+                    <div
+                      onClick={() => togglePhotoSelection(photo.photo_id)}
+                      className={`absolute top-2 left-2 w-6 h-6 rounded-full border-2 flex items-center justify-center cursor-pointer transition-colors ${
+                        selectedPhotoIds.has(photo.photo_id)
+                          ? "bg-coral border-coral"
+                          : "bg-white/80 border-white"
+                      }`}
+                    >
+                      {selectedPhotoIds.has(photo.photo_id) && (
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                          <path d="M20 6L9 17l-5-5" />
+                        </svg>
+                      )}
+                    </div>
+                  )}
 
                   <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/50 to-transparent pointer-events-none" />
 
@@ -530,6 +753,7 @@ function handleTouchEnd() {
                 </div>
               ))}
             </div>
+
 
             <button
               onClick={handleRetry}

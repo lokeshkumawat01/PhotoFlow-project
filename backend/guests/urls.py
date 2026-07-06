@@ -1,5 +1,5 @@
 from django.urls import path
-from .views import SelfieMatchView, RequestHDView, LivenessCheckView, DownloadAllPhotosView, LivenessFrameCheckView
+from .views import SelfieMatchView, RequestHDView, LivenessCheckView, DownloadAllPhotosView, LivenessFrameCheckView, CheckNewPhotosView
 
 urlpatterns = [
     path('event/<uuid:qr_token>/match/', SelfieMatchView.as_view(), name='guest-selfie-match'),
@@ -7,4 +7,5 @@ urlpatterns = [
     path('liveness-check/', LivenessCheckView.as_view(), name='liveness-check'),
     path('download-all/', DownloadAllPhotosView.as_view(), name='download-all-photos'),
     path('liveness-frame/', LivenessFrameCheckView.as_view(), name='liveness-frame-check'),
+    path('<uuid:guest_id>/check-new-photos/', CheckNewPhotosView.as_view(), name='check-new-photos'),
 ]

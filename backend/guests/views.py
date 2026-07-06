@@ -318,3 +318,58 @@ class CheckNewPhotosView(APIView):
             "total_count": total_count,
             "new_photos": results,
         })
+    
+
+class CheckNewPhotosView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    throttle_classes = []
+ 
+    def get(self, request, guest_id):
+        guest = Guest.objects.filter(id=guest_id).first()
+        if not guest:
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        try:
+            known_count = int(request.GET.get('known_count', 0))
+        except ValueError:
+            known_count = 0
+ 
+        if guest.is_vip:
+            all_photos = list(
+                Photo.objects.filter(event_id=guest.event_id, status='done')
+                .exclude(storage_key_preview='')
+                .order_by('uploaded_at')
+            )
+            current_ids = [str(p.id) for p in all_photos]
+ 
+            if len(current_ids) <= known_count:
+                return Response({"has_new": False})
+ 
+            # Keep the VIP's cached matched_photo_ids in sync as the
+            # album grows throughout the event.
+            guest.matched_photo_ids = current_ids
+            guest.save(update_fields=['matched_photo_ids'])
+ 
+            new_photos = all_photos[known_count:]
+        else:
+            current_ids = guest.matched_photo_ids or []
+            if len(current_ids) <= known_count:
+                return Response({"has_new": False})
+ 
+            new_ids = current_ids[known_count:]
+            new_photos = Photo.objects.filter(id__in=new_ids)
+ 
+        results = [
+            {
+                "photo_id": str(p.id),
+                "preview_url": _signed_preview_url(p.storage_key_preview),
+            }
+            for p in new_photos if p.storage_key_preview
+        ]
+ 
+        return Response({
+            "has_new": len(results) > 0,
+            "new_photos": results,
+            "total_count": len(guest.matched_photo_ids or []),
+        })

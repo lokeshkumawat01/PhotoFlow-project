@@ -1,5 +1,147 @@
 ﻿
 
+===== D:\photoflow\backend\accounts\admin.py =====
+
+from django.contrib import admin
+
+# Register your models here.
+
+
+===== D:\photoflow\backend\accounts\apps.py =====
+
+from django.apps import AppConfig
+
+
+class AccountsConfig(AppConfig):
+    name = 'accounts'
+
+
+===== D:\photoflow\backend\accounts\models.py =====
+
+from django.db import models
+
+# Create your models here.
+
+
+===== D:\photoflow\backend\accounts\serializers.py =====
+
+from django.contrib.auth.models import User
+from django.contrib.auth.password_validation import validate_password
+from rest_framework import serializers
+
+
+class RegisterSerializer(serializers.Serializer):
+    """
+    Validates incoming signup data before we touch the database.
+    Using a serializer here (instead of raw request.data checks) gives
+    us Django's built-in password strength rules for free.
+    """
+    username = serializers.CharField(max_length=150)
+    email = serializers.EmailField(required=False, allow_blank=True)
+    password = serializers.CharField(write_only=True)
+
+    def validate_username(self, value):
+        value = value.strip()
+        if not value:
+            raise serializers.ValidationError("Username cannot be empty.")
+        if User.objects.filter(username__iexact=value).exists():
+            raise serializers.ValidationError("This username is already taken.")
+        return value
+
+    def validate_email(self, value):
+        value = value.strip()
+        if value and User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("This email is already registered.")
+        return value
+
+    def validate_password(self, value):
+        # Runs Django's AUTH_PASSWORD_VALIDATORS (already configured in
+        # settings.py) -- minimum length, not-too-common, not-all-numeric, etc.
+        validate_password(value)
+        return value
+
+    def create(self, validated_data):
+        return User.objects.create_user(
+            username=validated_data["username"],
+            email=validated_data.get("email", ""),
+            password=validated_data["password"],
+        )
+
+
+===== D:\photoflow\backend\accounts\tests.py =====
+
+from django.test import TestCase
+
+# Create your tests here.
+
+
+===== D:\photoflow\backend\accounts\urls.py =====
+
+from django.urls import path
+from .views import RegisterView, MeView
+
+urlpatterns = [
+    path('register/', RegisterView.as_view(), name='register'),
+    path('me/', MeView.as_view(), name='me'),
+]
+
+
+===== D:\photoflow\backend\accounts\views.py =====
+
+from rest_framework.views import APIView
+from rest_framework.response import Response
+from rest_framework import status, permissions
+from rest_framework.throttling import ScopedRateThrottle
+
+from .serializers import RegisterSerializer
+
+
+class RegisterView(APIView):
+    """
+    POST /api/auth/register/
+    Public endpoint -- anyone can create an organizer account.
+    Login itself is handled separately by simplejwt's TokenObtainPairView.
+    """
+    permission_classes = [permissions.AllowAny]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = "auth_register"
+
+    def post(self, request):
+        serializer = RegisterSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        user = serializer.save()
+        return Response(
+            {
+                "message": "Account created successfully. Please log in.",
+                "username": user.username,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class MeView(APIView):
+    """
+    GET /api/auth/me/
+    Lets the frontend check who the logged-in organizer is, and whether
+    their access token is still valid, without hitting any other endpoint.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        return Response({
+            "username": user.username,
+            "email": user.email,
+            "date_joined": user.date_joined,
+        })
+
+
+===== D:\photoflow\backend\accounts\__init__.py =====
+
+
+
 ===== D:\photoflow\backend\aiengine\admin.py =====
 
 from django.contrib import admin
@@ -18,14 +160,6 @@ class AiengineConfig(AppConfig):
 
 ===== D:\photoflow\backend\aiengine\face_engine.py =====
 
-"""
-aiengine/face_engine.py
-
-Yeh file 2 kaam karti hai:
-1. Photo mein chehre dhundhna (detection)
-2. Har chehre ka 512-d fingerprint banana (embedding)
-"""
-
 import os
 import ctypes
 import logging
@@ -34,13 +168,6 @@ logger = logging.getLogger(__name__)
 
 
 def _add_nvidia_dll_paths():
-    """
-    pip se install ki gayi NVIDIA CUDA/cuDNN DLLs (cu12 packages) ko
-    explicitly Windows DLL search path mein add karta hai, AUR unko
-    explicitly ctypes se preload bhi karta hai (zaroori hai kyunki
-    onnxruntime ki CUDA provider DLL lazy-load hoti hai aur
-    add_dll_directory() ka effect Windows kabhi-kabhi miss kar deta hai).
-    """
     try:
         import nvidia.cuda_runtime, nvidia.cublas, nvidia.cufft, nvidia.cudnn
 
@@ -79,16 +206,19 @@ def _add_nvidia_dll_paths():
                     break
 
     except ImportError:
-        pass  # Linux/production server pe yeh packages nahi honge, normal CUDA install use hoga
+        pass  
 
 
 _add_nvidia_dll_paths()
 
 import threading
+import time
 import numpy as np
 
 _model_lock = threading.Lock()
 _face_app = None
+_last_used_time = None
+IDLE_TIMEOUT_SECONDS = 600  
 
 
 def _get_providers():
@@ -103,16 +233,16 @@ def _get_providers():
 
 
 def get_face_app():
-    """
-    InsightFace model ko load karta hai -- sirf ek baar (pehli call pe).
-    Uske baad har call usi loaded model ko reuse karti hai (fast).
-    """
-    global _face_app
-    if _face_app is not None:
-        return _face_app
+    global _face_app, _last_used_time
 
     with _model_lock:
+        if _face_app is not None and _last_used_time is not None:
+            if time.time() - _last_used_time > IDLE_TIMEOUT_SECONDS:
+                logger.info("Face model idle timeout reached -- unloading to free resources.")
+                _face_app = None
+
         if _face_app is not None:
+            _last_used_time = time.time()
             return _face_app
 
         from insightface.app import FaceAnalysis
@@ -124,11 +254,11 @@ def get_face_app():
         app.prepare(ctx_id=0, det_size=(640, 640))
 
         _face_app = app
+        _last_used_time = time.time()
         return _face_app
 
 
 class DetectedFace:
-    """Ek detected chehre ka data -- fingerprint + location + confidence."""
     def __init__(self, embedding, bbox, confidence):
         self.embedding = embedding
         self.bbox = bbox
@@ -136,9 +266,6 @@ class DetectedFace:
 
 
 def detect_and_embed_faces(image_bgr: np.ndarray) -> list[DetectedFace]:
-    """
-    Ek photo lo, usme jitne chehre hain sabka fingerprint nikal kar do.
-    """
     app = get_face_app()
     faces = app.get(image_bgr)
 
@@ -264,11 +391,13 @@ def get_ear_for_frame(frame_bgr) -> float | None:
 
 ===== D:\photoflow\backend\aiengine\matcher.py =====
 
+import numpy as np
 from photos.models import FaceEmbedding
 from pgvector.django import CosineDistance
 from events.models import VIPProfile
 
 VIP_MATCH_THRESHOLD = 0.35
+GUEST_MATCH_THRESHOLD = 0.6
 
 def find_matching_photos(event_id: str, query_embedding, threshold: float = 0.45):
     # pgvector's CosineDistance gives a DISTANCE (0 = identical, 2 = opposite),
@@ -312,6 +441,39 @@ def match_vip(guest_embedding, event_id):
         return closest_vip
 
     return None
+
+def match_guests_for_new_photo(event_id, face_embeddings):
+    from guests.models import Guest
+ 
+    guests = list(
+        Guest.objects.filter(event_id=event_id, is_vip=False)
+        .exclude(selfie_embedding__isnull=True)
+    )
+ 
+    matched_guest_ids = []
+    for guest in guests:
+        guest_vec = np.array(guest.selfie_embedding)
+        for face_vec in face_embeddings:
+            similarity = float(np.dot(guest_vec, np.array(face_vec)))
+            distance = 1 - similarity
+            if distance <= GUEST_MATCH_THRESHOLD:
+                matched_guest_ids.append(guest.id)
+                break  # this guest matched one face in the photo, no need to check the rest
+ 
+    return matched_guest_ids
+ 
+ 
+def add_photo_to_matched_guests(photo_id: str, matched_guest_ids: list):
+    from django.db import transaction
+    from guests.models import Guest
+ 
+    with transaction.atomic():
+        for guest_id in matched_guest_ids:
+            guest = Guest.objects.select_for_update().get(id=guest_id)
+            if photo_id not in guest.matched_photo_ids:
+                guest.matched_photo_ids.append(photo_id)
+                guest.save(update_fields=['matched_photo_ids'])
+ 
 
 
 ===== D:\photoflow\backend\aiengine\models.py =====
@@ -453,6 +615,7 @@ INSTALLED_APPS = [
     'guests',
     'aiengine',
     'highlights',
+    'accounts',
 ]
 
 MIDDLEWARE = [
@@ -556,6 +719,9 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 50
 
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'core.exception_handlers.custom_exception_handler',
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework_simplejwt.authentication.JWTAuthentication',
+    ],
     'DEFAULT_THROTTLE_CLASSES': [
         'rest_framework.throttling.AnonRateThrottle',
         'rest_framework.throttling.UserRateThrottle',
@@ -566,7 +732,18 @@ REST_FRAMEWORK = {
         # event's photos or burn GPU compute gets capped here.
         'anon': '30/minute',
         'user': '60/minute',
+        'auth_register': '5/hour',
+        'event_create': '20/hour',
+        'live_photo_upload': '1000/minute', 
     },
+}
+
+from datetime import timedelta
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(hours=1),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'SIGNING_KEY': os.environ.get('JWT_SIGNING_KEY', SECRET_KEY),
 }
 
 
@@ -590,6 +767,7 @@ Including another URLconf
 """
 from django.contrib import admin
 from django.urls import path, include
+from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -597,6 +775,9 @@ urlpatterns = [
     path('api/photos/', include('photos.urls')),
     path('api/guest/', include('guests.urls')),
     path('api/events/', include('events.urls')),
+    path('api/auth/', include('accounts.urls')),
+    path('api/auth/login/', TokenObtainPairView.as_view(), name='token_obtain_pair'),
+    path('api/auth/refresh/', TokenRefreshView.as_view(), name='token_refresh'), 
 ]
 
 
@@ -651,99 +832,62 @@ class EventsConfig(AppConfig):
 
 import uuid
 from django.db import models
-from django.contrib.auth.models import User
-from django.utils import timezone
-from datetime import timedelta
 from pgvector.django import VectorField
 
 
 class Event(models.Model):
-    PLAN_CHOICES = {
+    PLAN_EXPIRY_DAYS = {
         'free': 7,
         'starter': 30,
         'pro': 30,
         'premium': 30,
     }
+    PLAN_CHOICES = [(k, k.capitalize()) for k in PLAN_EXPIRY_DAYS]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    organizer = models.ForeignKey(User, on_delete=models.CASCADE, related_name='events')
-
-    name = models.CharField(max_length=255)
+    organizer = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name='events')
+    name = models.CharField(max_length=200)
     event_date = models.DateField()
-
-    qr_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False, db_index=True)
-
-    # NAYA: token ko manually revoke/regenerate karne ka option
-    qr_token_active = models.BooleanField(default=True)
-
-    # NAYA: optional expiry â€” event ke X din baad link auto-expire ho jaye
-    qr_token_expires_at = models.DateTimeField(null=True, blank=True)
-
-    # NAYA: optional PIN protection (sensitive events ke liye)
-    access_pin = models.CharField(max_length=6, null=True, blank=True)
-
+    qr_token = models.UUIDField(default=uuid.uuid4, unique=True, editable=False)
     plan_type = models.CharField(max_length=20, choices=PLAN_CHOICES, default='free')
-
     storage_used_mb = models.FloatField(default=0)
     is_active = models.BooleanField(default=True)
-
     created_at = models.DateTimeField(auto_now_add=True)
 
-    def __str__(self):
-        return f"{self.name} ({self.event_date})"
-
-    def save(self, *args, **kwargs):
-        # Agar expiry set nahi hai, default event_date se 30 din baad expire karo
-        if not self.qr_token_expires_at:
-            self.qr_token_expires_at = timezone.now() + timedelta(days=30)
-        super().save(*args, **kwargs)
-
-    def regenerate_qr_token(self):
-        """Agar link leak ho jaye, organizer isse call kare naya token banane ke liye"""
-        self.qr_token = uuid.uuid4()
-        self.save(update_fields=['qr_token'])
-
-    def is_qr_token_valid(self):
-        if not self.qr_token_active or not self.is_active:
-            return False
-        if self.qr_token_expires_at and timezone.now() > self.qr_token_expires_at:
-            return False
-        return True
-    
     def upgrade_plan(self, new_plan_type):
-        if new_plan_type not in dict(self.PLAN_CHOICES):
-            raise ValueError("Invalid plan type")
-
         self.plan_type = new_plan_type
-        new_expiry_days = self.PLAN_EXPIRY_DAYS.get(new_plan_type, 30)
-        new_expiry = self.event_date and timezone.now() + timedelta(days=new_expiry_days)
+        self.save(update_fields=['plan_type'])
 
-        if not self.qr_token_expires_at or new_expiry > self.qr_token_expires_at:
-            self.qr_token_expires_at = new_expiry
+    def __str__(self):
+        return f"{self.name} ({self.plan_type})"
 
-        self.save(update_fields=['plan_type', 'qr_token_expires_at'])
 
-    @property
-    def guest_access_url(self):
-        from django.conf import settings
-        return f"{settings.FRONTEND_BASE_URL}/event/{self.qr_token}"
-    
+class PlanLimit(models.Model):
+    plan_type = models.CharField(max_length=20, unique=True)
+    max_photos = models.IntegerField()
+    max_storage_mb = models.IntegerField()
+    hd_downloads_included = models.IntegerField()
+    price_inr = models.IntegerField()
+
+    def __str__(self):
+        return self.plan_type
+
+
 class VIPProfile(models.Model):
+    """
+    Organizer-registered VIP/family members. Access is granted by face
+    match, not by phone number or any other guessable identifier.
+    """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    event = models.ForeignKey(
-        'events.Event',
-        on_delete=models.CASCADE,
-        related_name='vip_profiles'
-    )
-    name = models.CharField(max_length=100)
-    reference_embedding = VectorField(dimensions=512)  # FaceEmbedding/Guest jaisa hi 512-d
+    event = models.ForeignKey('events.Event', on_delete=models.CASCADE, related_name='vip_profiles')
+    name = models.CharField(max_length=100, blank=True)
+    reference_embedding = VectorField(dimensions=512)
+    thumbnail_key = models.CharField(max_length=255, blank=True)
     added_by_organizer_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = 'events_vipprofile'
-        indexes = [
-            models.Index(fields=['event']),
-        ]
+        indexes = [models.Index(fields=['event'])]
 
     def __str__(self):
         return f"VIP: {self.name} ({self.event.name})"
@@ -752,24 +896,168 @@ class VIPProfile(models.Model):
 ===== D:\photoflow\backend\events\qr_generator.py =====
 
 import io
+from PIL import Image, ImageDraw, ImageFont, ImageOps
+
 import qrcode
+from qrcode.image.styledpil import StyledPilImage
+from qrcode.image.styles.moduledrawers.pil import (
+    RoundedModuleDrawer,
+    CircleModuleDrawer,
+    SquareModuleDrawer,
+)
+from qrcode.image.styles.colormasks import SolidFillColorMask, RadialGradiantColorMask
 
 
-def generate_event_qr_bytes(guest_access_url: str) -> bytes:
-    """QR code ki PNG image bytes return karta hai."""
+WHITE = (255, 255, 255)
+
+DRAWER_PRESETS = {
+    "classic": SquareModuleDrawer(),
+    "rounded_coral": RoundedModuleDrawer(),
+    "dots": CircleModuleDrawer(),
+    "coral_gradient": RoundedModuleDrawer(),
+}
+
+# Minimum final pixel size -- guarantees a crisp, print-ready image no
+# matter how "small" the QR data makes the raw module grid.
+MIN_OUTPUT_SIZE = 1200
+
+
+def _hex_to_rgb(hex_color: str, fallback=(31, 31, 31)):
+    try:
+        hex_color = hex_color.strip().lstrip('#')
+        if len(hex_color) == 3:
+            hex_color = ''.join(c * 2 for c in hex_color)
+        return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    except Exception:
+        return fallback
+
+
+def _make_base_qr(data: str, style: str, fg_color: str, bg_color: str) -> Image.Image:
+    drawer = DRAWER_PRESETS.get(style, DRAWER_PRESETS["classic"])
+    fg_rgb = _hex_to_rgb(fg_color, fallback=(31, 31, 31))
+    bg_rgb = _hex_to_rgb(bg_color, fallback=WHITE)
+
+    if style == "coral_gradient":
+        edge_rgb = tuple(max(0, c - 45) for c in fg_rgb)  # slightly darker shade for the edge
+        color_mask = RadialGradiantColorMask(back_color=bg_rgb, center_color=fg_rgb, edge_color=edge_rgb)
+    else:
+        color_mask = SolidFillColorMask(front_color=fg_rgb, back_color=bg_rgb)
+
     qr = qrcode.QRCode(
-        version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=10,
-        border=4,
+        error_correction=qrcode.constants.ERROR_CORRECT_H,  # highest correction --
+        box_size=24,                                          # needed since the center
+        border=3,                                              # may be covered by a logo/badge
     )
-    qr.add_data(guest_access_url)
+    qr.add_data(data)
     qr.make(fit=True)
 
-    img = qr.make_image(fill_color="black", back_color="white")
-    buf = io.BytesIO()
-    img.save(buf, format='PNG')
-    return buf.getvalue()
+    img = qr.make_image(
+        image_factory=StyledPilImage,
+        module_drawer=drawer,
+        color_mask=color_mask,
+    ).convert("RGBA")
+
+    # Upscale to a guaranteed HD floor so it stays crisp when printed or
+    # opened in an image editor, regardless of the QR's raw module count.
+    if img.width < MIN_OUTPUT_SIZE:
+        scale = MIN_OUTPUT_SIZE / img.width
+        new_size = (int(img.width * scale), int(img.height * scale))
+        img = img.resize(new_size, Image.LANCZOS)
+
+    return img
+
+
+def _circular_crop(image: Image.Image, size: int) -> Image.Image:
+    """
+    Fits any image (square, rectangle, tall, wide) into a perfect circle:
+    1. Cover-fit (scale + center-crop) so there's no stretching/distortion
+    2. Clip to a circular alpha mask
+    This guarantees a clean circular badge regardless of the source image's
+    original aspect ratio -- fixes logos rendering as an awkward rectangle.
+    """
+    fitted = ImageOps.fit(image.convert("RGBA"), (size, size), method=Image.LANCZOS)
+
+    mask = Image.new("L", (size, size), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.ellipse((0, 0, size, size), fill=255)
+
+    result = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    result.paste(fitted, (0, 0), mask)
+    return result
+
+
+def _paste_center_logo(qr_img: Image.Image, logo_bytes: bytes) -> Image.Image:
+    logo = Image.open(io.BytesIO(logo_bytes))
+
+    qr_w, qr_h = qr_img.size
+    badge_size = int(qr_w * 0.26)
+    white_ring = int(badge_size * 1.12)  # slightly larger white circle behind the logo for contrast
+
+    # White circular backdrop first (so the logo pops against busy QR patterns)
+    backdrop = Image.new("RGBA", (white_ring, white_ring), (0, 0, 0, 0))
+    ImageDraw.Draw(backdrop).ellipse((0, 0, white_ring, white_ring), fill=WHITE)
+
+    circular_logo = _circular_crop(logo, badge_size)
+    logo_offset = (white_ring - badge_size) // 2
+    backdrop.paste(circular_logo, (logo_offset, logo_offset), circular_logo)
+
+    pos = ((qr_w - white_ring) // 2, (qr_h - white_ring) // 2)
+    qr_img.paste(backdrop, pos, backdrop)
+    return qr_img
+
+
+def _paste_center_text(qr_img: Image.Image, text: str, fg_color: str) -> Image.Image:
+    qr_w, qr_h = qr_img.size
+    badge_size = int(qr_w * 0.26)
+    fg_rgb = _hex_to_rgb(fg_color, fallback=(198, 90, 61))
+
+    badge = Image.new("RGBA", (badge_size, badge_size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(badge)
+    draw.ellipse((0, 0, badge_size, badge_size), fill=fg_rgb)
+
+    display_text = text.strip()[:3].upper() or "PF"
+
+    try:
+        font = ImageFont.truetype("arialbd.ttf", int(badge_size * 0.34))
+    except Exception:
+        font = ImageFont.load_default()
+
+    bbox = draw.textbbox((0, 0), display_text, font=font)
+    text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(
+        ((badge_size - text_w) / 2 - bbox[0], (badge_size - text_h) / 2 - bbox[1]),
+        display_text,
+        fill=WHITE,
+        font=font,
+    )
+
+    pos = ((qr_w - badge_size) // 2, (qr_h - badge_size) // 2)
+    qr_img.paste(badge, pos, badge)
+    return qr_img
+
+
+def generate_styled_qr_png(
+    data: str,
+    style: str = "classic",
+    fg_color: str = "#1f1f1f",
+    bg_color: str = "#ffffff",
+    logo_bytes: bytes | None = None,
+    center_text: str | None = None,
+) -> bytes:
+    """
+    Builds an HD-resolution QR code PNG with custom colors and an optional
+    center logo (always circle-cropped, never stretched) or text badge.
+    """
+    qr_img = _make_base_qr(data, style, fg_color, bg_color)
+
+    if logo_bytes:
+        qr_img = _paste_center_logo(qr_img, logo_bytes)
+    elif center_text:
+        qr_img = _paste_center_text(qr_img, center_text, fg_color)
+
+    buffer = io.BytesIO()
+    qr_img.convert("RGB").save(buffer, format="PNG", optimize=False)
+    return buffer.getvalue()
 
 
 ===== D:\photoflow\backend\events\tests.py =====
@@ -782,65 +1070,82 @@ from django.test import TestCase
 ===== D:\photoflow\backend\events\urls.py =====
 
 from django.urls import path
-from .views import EventQRCodeView, EventCreateView, VIPProfileUploadView, VIPProfileListView, VIPProfileDeleteView
+from .views import (
+    EventCreateView,
+    EventQRCodeView,
+    QRStyleView,
+    VIPProfileUploadView,
+    VIPGroupUploadView,
+    VIPProfileListView,
+    VIPProfileDeleteView,
+    VIPRenameView,
+    VIPThumbnailView,
+)
 
 urlpatterns = [
-    path('<uuid:event_id>/qr/', EventQRCodeView.as_view(), name='event-qr'),
     path('create/', EventCreateView.as_view(), name='event-create'),
+    path('<uuid:event_id>/qr/', EventQRCodeView.as_view(), name='event-qr'),
+    path('<uuid:event_id>/qr/style/', QRStyleView.as_view(), name='qr-style'),
+
     path('<uuid:event_id>/vip/', VIPProfileUploadView.as_view(), name='vip-upload'),
+    path('<uuid:event_id>/vip/group/', VIPGroupUploadView.as_view(), name='vip-group-upload'),
     path('<uuid:event_id>/vip/list/', VIPProfileListView.as_view(), name='vip-list'),
     path('<uuid:event_id>/vip/<uuid:vip_id>/', VIPProfileDeleteView.as_view(), name='vip-delete'),
+    path('<uuid:event_id>/vip/<uuid:vip_id>/rename/', VIPRenameView.as_view(), name='vip-rename'),
+    path('<uuid:event_id>/vip/<uuid:vip_id>/thumbnail/', VIPThumbnailView.as_view(), name='vip-thumbnail'),
 ]
 
 
 ===== D:\photoflow\backend\events\views.py =====
 
-from datetime import datetime, timedelta
-from django.http import HttpResponse
-from django.utils import timezone
+import uuid
+import cv2
+from pathlib import Path
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status, permissions 
-from rest_framework.permissions import IsAuthenticated
+from rest_framework import status, permissions
+from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.throttling import ScopedRateThrottle
 from django.shortcuts import get_object_or_404
-from rest_framework.parsers import MultiPartParser, FormParser
+from django.conf import settings
+from django.http import HttpResponse, FileResponse, Http404
+
 from .models import Event, VIPProfile
+from .qr_generator import generate_styled_qr_png
+from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr
+from aiengine.face_engine import detect_and_embed_faces
 
-from .models import Event
-from .qr_generator import generate_event_qr_bytes
 
+# ============================================================
+# EVENT CREATION
+# ============================================================
 
 class EventCreateView(APIView):
-    permission_classes = [IsAuthenticated]  # login zaroori â€” request.user se organizer milega
+    permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'event_create'
 
     def post(self, request):
-        event_name = request.data.get("event_name", "").strip()
-        event_date_str = request.data.get("event_date", "").strip()
-        plan_type = request.data.get("plan_type", "free").strip()
+        event_name = request.data.get('event_name', '').strip()
+        event_date = request.data.get('event_date')
+        plan_type = request.data.get('plan_type', 'free')
 
-        if not event_name or not event_date_str:
+        if not event_name or not event_date:
             return Response(
-                {"error": "event_name and event_date are required"},
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-
-        try:
-            event_date = datetime.strptime(event_date_str, "%Y-%m-%d").date()
-        except ValueError:
-            return Response(
-                {"error": "event_date must be in YYYY-MM-DD format"},
-                status=status.HTTP_400_BAD_REQUEST,
+                {"error": "event_name and event_date are required."},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
         valid_plans = [choice[0] for choice in Event.PLAN_CHOICES]
         if plan_type not in valid_plans:
-            plan_type = 'free'
+            return Response(
+                {"error": f"Invalid plan_type. Must be one of {valid_plans}."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
 
         event = Event.objects.create(
-            organizer=request.user,          # login se aaya hua real user
+            organizer=request.user,
             name=event_name,
             event_date=event_date,
             plan_type=plan_type,
@@ -848,48 +1153,47 @@ class EventCreateView(APIView):
 
         return Response({
             "event_id": str(event.id),
+            "name": event.name,
             "qr_token": str(event.qr_token),
-            "guest_access_url": event.guest_access_url,
-            "expires_at": event.qr_token_expires_at,
         }, status=status.HTTP_201_CREATED)
 
 
+# ============================================================
+# QR CODE
+# ============================================================
+
+def _build_guest_url(request, event) -> str:
+    """
+    Builds the guest-facing link that the QR code should point to.
+    Adjust FRONTEND_BASE_URL in settings.py if your frontend runs on a
+    different host/port than the default Next.js dev server.
+    """
+    frontend_base = getattr(settings, 'FRONTEND_BASE_URL', 'http://127.0.0.1:3000')
+    return f"{frontend_base}/event/{event.qr_token}"
+
+
 class EventQRCodeView(APIView):
-    """GET /api/events/<event_id>/qr/ -- sirf event ka organizer hi QR nikal sakta hai."""
-    permission_classes = [IsAuthenticated]
+    """
+    Returns a plain (unstyled) QR code PNG for the event's guest link.
+    Kept for any place that just needs a quick, no-frills QR image.
+    For the customizable version (styles, logo, center text), see
+    QRStyleView below.
+    """
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, event_id):
-        event = Event.objects.filter(id=event_id, organizer=request.user).first()
-        if not event:
-            return Response({"error": "Event not found"}, status=status.HTTP_404_NOT_FOUND)
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        guest_url = _build_guest_url(request, event)
 
-        qr_bytes = generate_event_qr_bytes(event.guest_access_url)
-        return HttpResponse(qr_bytes, content_type="image/png")
-    
-class EventUpgradePlanView(APIView):
-    permission_classes = [IsAuthenticated]
+        png_bytes = generate_styled_qr_png(data=guest_url, style="classic")
+        return HttpResponse(png_bytes, content_type="image/png")
 
-    def post(self, request, event_id):
-        event = Event.objects.filter(id=event_id, organizer=request.user).first()
-        if not event:
-            return Response({"error": "Event not found"}, status=status.HTTP_404_NOT_FOUND)
 
-        new_plan = request.data.get("plan_type", "").strip()
-        try:
-            event.upgrade_plan(new_plan)
-        except ValueError as e:
-            return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response({
-            "plan_type": event.plan_type,
-            "expires_at": event.qr_token_expires_at,
-            "guest_access_url": event.guest_access_url,  # same rehta hai
-        })
-    
-class VIPProfileUploadView(APIView):
+class QRStyleView(APIView):
     """
-    Organizer ek reference photo upload karta hai VIP family member ki.
-    Face embedding nikal ke VIPProfile table mein store hota hai.
+    Generates a styled QR code PNG on the fly based on the organizer's
+    chosen style, optional center logo, or optional center text badge.
+    Nothing is stored on disk -- styling is purely presentational.
     """
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -897,43 +1201,215 @@ class VIPProfileUploadView(APIView):
     def post(self, request, event_id):
         event = get_object_or_404(Event, id=event_id, organizer=request.user)
 
-        name = request.data.get('name')
+        style = request.data.get("style", "classic")
+        fg_color = request.data.get("fg_color", "#1f1f1f")
+        bg_color = request.data.get("bg_color", "#ffffff")
+        center_text = request.data.get("center_text", "").strip()
+        logo_file = request.FILES.get("logo")
+
+        guest_url = _build_guest_url(request, event)
+        logo_bytes = logo_file.read() if logo_file else None
+
+        try:
+            png_bytes = generate_styled_qr_png(
+                data=guest_url,
+                style=style,
+                fg_color=fg_color,
+                bg_color=bg_color,
+                logo_bytes=logo_bytes,
+                center_text=center_text or None,
+            )
+        except Exception:
+            return Response(
+                {"error": "Could not generate this QR style. Try a different logo image."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        return HttpResponse(png_bytes, content_type="image/png")
+
+
+# ============================================================
+# VIP / FAMILY ACCESS
+# ============================================================
+
+def _closest_face_to_center(faces, image_shape):
+    img_height, img_width = image_shape[:2]
+    center_x, center_y = img_width / 2, img_height / 2
+
+    def distance(face):
+        x, y, w, h = face.bbox
+        fx, fy = x + w / 2, y + h / 2
+        return ((fx - center_x) ** 2 + (fy - center_y) ** 2) ** 0.5
+
+    return min(faces, key=distance)
+
+
+def _save_face_thumbnail(cv2_image, bbox, vip_id) -> str:
+    x, y, w, h = bbox
+    pad = int(0.35 * max(w, h))
+
+    img_h, img_w = cv2_image.shape[:2]
+    x1 = max(0, x - pad)
+    y1 = max(0, y - pad)
+    x2 = min(img_w, x + w + pad)
+    y2 = min(img_h, y + h + pad)
+
+    face_crop = cv2_image[y1:y2, x1:x2]
+    if face_crop.size == 0:
+        return ""
+
+    success, encoded = cv2.imencode('.jpg', face_crop, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    if not success:
+        return ""
+
+    storage_key = f"vip_thumbnails/{vip_id}.jpg"
+    full_path = Path(settings.MEDIA_ROOT) / storage_key
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.write_bytes(encoded.tobytes())
+    return storage_key
+
+
+class VIPProfileUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        name = request.data.get('name', '').strip()
         photo_file = request.FILES.get('reference_photo')
 
         if not name or not photo_file:
             return Response(
-                {"error": "name aur reference_photo dono required hain"},
+                {"error": "name and reference_photo are both required."},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # existing face_engine function reuse â€” jaisa guest selfie ke liye use hota hai
-        embedding_result = embed_single_face(photo_file)
-
-        if embedding_result is None:
+        file_bytes = photo_file.read()
+        try:
+            img = load_image_corrected(file_bytes)
+            cv2_image = pil_to_cv2_bgr(img)
+        except Exception:
             return Response(
-                {"error": "Photo mein clear face detect nahi hua, dusri photo try karo"},
+                {"error": "We couldn't read that image. Try a different photo."},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        faces = detect_and_embed_faces(cv2_image)
+        if not faces:
+            return Response(
+                {"error": "No clear face detected in this photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        best_face = _closest_face_to_center(faces, cv2_image.shape)
+
+        vip_id = uuid.uuid4()
+        thumbnail_key = _save_face_thumbnail(cv2_image, best_face.bbox, vip_id)
 
         vip = VIPProfile.objects.create(
-            id=uuid.uuid4(),
+            id=vip_id,
             event=event,
             name=name,
-            reference_embedding=embedding_result['embedding']
+            reference_embedding=best_face.embedding.tolist(),
+            thumbnail_key=thumbnail_key,
         )
+        return Response({"id": str(vip.id), "name": vip.name}, status=status.HTTP_201_CREATED)
 
-        return Response(
-            {"id": str(vip.id), "name": vip.name, "message": "VIP profile added"},
-            status=status.HTTP_201_CREATED
-        )
+
+class VIPGroupUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        group_photo = request.FILES.get('group_photo')
+        if not group_photo:
+            return Response(
+                {"error": "Please upload a group photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_bytes = group_photo.read()
+        try:
+            img = load_image_corrected(file_bytes)
+            cv2_image = pil_to_cv2_bgr(img)
+        except Exception:
+            return Response(
+                {"error": "We couldn't read that image. Try a different photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        faces = detect_and_embed_faces(cv2_image)
+        if not faces:
+            return Response(
+                {"error": "No faces were detected in this photo. Try a clearer, well-lit group photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        existing_count = VIPProfile.objects.filter(event=event).count()
+
+        created_vips = []
+        for i, face in enumerate(faces, start=1):
+            vip_id = uuid.uuid4()
+            thumbnail_key = _save_face_thumbnail(cv2_image, face.bbox, vip_id)
+
+            vip = VIPProfile.objects.create(
+                id=vip_id,
+                event=event,
+                name=f"VIP {existing_count + i}",
+                reference_embedding=face.embedding.tolist(),
+                thumbnail_key=thumbnail_key,
+            )
+            created_vips.append({"id": str(vip.id), "name": vip.name})
+
+        return Response({
+            "message": f"{len(created_vips)} people added as VIPs from this photo.",
+            "vips": created_vips,
+        }, status=status.HTTP_201_CREATED)
+
+
 class VIPProfileListView(APIView):
-    
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request, event_id):
         event = get_object_or_404(Event, id=event_id, organizer=request.user)
         vips = event.vip_profiles.all().values('id', 'name', 'added_by_organizer_at')
         return Response(list(vips))
+
+
+class VIPThumbnailView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id, vip_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        vip = get_object_or_404(VIPProfile, id=vip_id, event=event)
+
+        if not vip.thumbnail_key:
+            raise Http404("No thumbnail available for this VIP.")
+
+        full_path = Path(settings.MEDIA_ROOT) / vip.thumbnail_key
+        if not full_path.exists():
+            raise Http404("Thumbnail file not found.")
+
+        return FileResponse(open(full_path, 'rb'), content_type='image/jpeg')
+
+
+class VIPRenameView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def patch(self, request, event_id, vip_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        vip = get_object_or_404(VIPProfile, id=vip_id, event=event)
+
+        new_name = request.data.get('name', '').strip()
+        if not new_name:
+            return Response({"error": "Name cannot be empty."}, status=status.HTTP_400_BAD_REQUEST)
+
+        vip.name = new_name
+        vip.save(update_fields=['name'])
+        return Response({"id": str(vip.id), "name": vip.name})
 
 
 class VIPProfileDeleteView(APIView):
@@ -996,6 +1472,9 @@ class Guest(models.Model):
     # Match hui photos ki list cache karke rakhte hain (baar baar search na karna pade)
     matched_photo_ids = models.JSONField(default=list, blank=True)
 
+    is_vip = models.BooleanField(default=False)         
+    vip_name = models.CharField(max_length=100, blank=True) 
+
     created_at = models.DateTimeField(auto_now_add=True)
     last_accessed_at = models.DateTimeField(auto_now=True)
 
@@ -1033,7 +1512,7 @@ from django.test import TestCase
 ===== D:\photoflow\backend\guests\urls.py =====
 
 from django.urls import path
-from .views import SelfieMatchView, RequestHDView, LivenessCheckView, DownloadAllPhotosView, LivenessFrameCheckView
+from .views import SelfieMatchView, RequestHDView, LivenessCheckView, DownloadAllPhotosView, LivenessFrameCheckView, CheckNewPhotosView
 
 urlpatterns = [
     path('event/<uuid:qr_token>/match/', SelfieMatchView.as_view(), name='guest-selfie-match'),
@@ -1041,6 +1520,7 @@ urlpatterns = [
     path('liveness-check/', LivenessCheckView.as_view(), name='liveness-check'),
     path('download-all/', DownloadAllPhotosView.as_view(), name='download-all-photos'),
     path('liveness-frame/', LivenessFrameCheckView.as_view(), name='liveness-frame-check'),
+    path('<uuid:guest_id>/check-new-photos/', CheckNewPhotosView.as_view(), name='check-new-photos'),
 ]
 
 
@@ -1058,6 +1538,7 @@ from django.core.exceptions import ValidationError
 from events.models import Event
 from photos.models import Photo
 from .models import Guest
+from aiengine.matcher import match_vip, find_matching_photos
 
 logger = logging.getLogger(__name__)
 
@@ -1126,9 +1607,47 @@ class SelfieMatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
+        # --- VIP check happens FIRST, before normal photo matching ---
+        # If this face matches a pre-registered VIP/family profile, skip
+        # the normal similarity search entirely and grant access to the
+        # whole event album instead of just matched photos.
+        vip_match = match_vip(embedding, str(event.id))
+
+        if vip_match is not None:
+            guest = Guest.objects.create(
+                event=event,
+                selfie_embedding=embedding.tolist(),
+                is_vip=True,
+                vip_name=vip_match.name,
+            )
+
+            all_photos = Photo.objects.filter(
+                event=event, status="done"
+            ).exclude(storage_key_preview="")
+
+            guest.matched_photo_ids = [str(p.id) for p in all_photos]
+            guest.save(update_fields=["matched_photo_ids"])
+
+            results = [
+                {
+                    "photo_id": str(p.id),
+                    "preview_url": _signed_preview_url(p.storage_key_preview),
+                    "similarity": None,  # not applicable for VIP access
+                }
+                for p in all_photos
+            ]
+
+            return Response({
+                "guest_id": str(guest.id),
+                "is_vip": True,
+                "vip_name": vip_match.name,
+                "matched_count": len(results),
+                "photos": results,
+            })
+
+        # --- Normal guest flow: face-similarity based photo matching ---
         guest = Guest.objects.create(event=event, selfie_embedding=embedding.tolist())
 
-        from aiengine.matcher import find_matching_photos
         matches = find_matching_photos(str(event.id), embedding)
 
         guest.matched_photo_ids = [m["photo_id"] for m in matches]
@@ -1149,10 +1668,12 @@ class SelfieMatchView(APIView):
 
         return Response({
             "guest_id": str(guest.id),
+            "is_vip": False,
             "matched_count": len(results),
             "photos": results,
         })
-    
+
+
 class RequestHDView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -1185,7 +1706,8 @@ class RequestHDView(APIView):
 
         hd_url = _signed_preview_url(photo.storage_key_hd)
         return Response({"hd_url": hd_url, "expires_in_seconds": 600})
-    
+
+
 class LivenessCheckView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -1212,7 +1734,8 @@ class LivenessCheckView(APIView):
 
         result = check_blink_liveness(frames)
         return Response(result)
-    
+
+
 class DownloadAllPhotosView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -1255,11 +1778,13 @@ class DownloadAllPhotosView(APIView):
         response = HttpResponse(zip_buffer.getvalue(), content_type="application/zip")
         response["Content-Disposition"] = 'attachment; filename="my-photos.zip"'
         return response
-    
+
+
 class LivenessFrameCheckView(APIView):
     authentication_classes = []
     permission_classes = []
     parser_classes = [MultiPartParser]
+    throttle_classes = []
 
     def post(self, request):
         from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr
@@ -1277,6 +1802,105 @@ class LivenessFrameCheckView(APIView):
 
         ear = get_ear_for_frame(cv2_image)
         return Response({"ear": ear})
+    
+class CheckNewPhotosView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    throttle_classes = []  
+ 
+    def get(self, request, guest_id):
+        try:
+            guest = Guest.objects.filter(id=guest_id).first()
+        except (ValueError, ValidationError):
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        if not guest:
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        try:
+            known_count = int(request.query_params.get('known_count', 0))
+        except ValueError:
+            known_count = 0
+ 
+        current_ids = guest.matched_photo_ids or []
+        total_count = len(current_ids)
+ 
+        if total_count <= known_count:
+            return Response({"has_new": False, "total_count": total_count})
+ 
+        new_ids = current_ids[known_count:]
+        new_photos = Photo.objects.filter(id__in=new_ids).exclude(storage_key_preview="")
+ 
+        from .views import _signed_preview_url  
+ 
+        results = [
+            {
+                "photo_id": str(p.id),
+                "preview_url": _signed_preview_url(p.storage_key_preview),
+            }
+            for p in new_photos
+        ]
+ 
+        return Response({
+            "has_new": True,
+            "total_count": total_count,
+            "new_photos": results,
+        })
+    
+
+class CheckNewPhotosView(APIView):
+    authentication_classes = []
+    permission_classes = []
+    throttle_classes = []
+ 
+    def get(self, request, guest_id):
+        guest = Guest.objects.filter(id=guest_id).first()
+        if not guest:
+            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        try:
+            known_count = int(request.GET.get('known_count', 0))
+        except ValueError:
+            known_count = 0
+ 
+        if guest.is_vip:
+            all_photos = list(
+                Photo.objects.filter(event_id=guest.event_id, status='done')
+                .exclude(storage_key_preview='')
+                .order_by('uploaded_at')
+            )
+            current_ids = [str(p.id) for p in all_photos]
+ 
+            if len(current_ids) <= known_count:
+                return Response({"has_new": False})
+ 
+            # Keep the VIP's cached matched_photo_ids in sync as the
+            # album grows throughout the event.
+            guest.matched_photo_ids = current_ids
+            guest.save(update_fields=['matched_photo_ids'])
+ 
+            new_photos = all_photos[known_count:]
+        else:
+            current_ids = guest.matched_photo_ids or []
+            if len(current_ids) <= known_count:
+                return Response({"has_new": False})
+ 
+            new_ids = current_ids[known_count:]
+            new_photos = Photo.objects.filter(id__in=new_ids)
+ 
+        results = [
+            {
+                "photo_id": str(p.id),
+                "preview_url": _signed_preview_url(p.storage_key_preview),
+            }
+            for p in new_photos if p.storage_key_preview
+        ]
+ 
+        return Response({
+            "has_new": len(results) > 0,
+            "new_photos": results,
+            "total_count": len(guest.matched_photo_ids or []),
+        })
 
 
 ===== D:\photoflow\backend\guests\__init__.py =====
@@ -1664,6 +2288,14 @@ def process_single_photo(self, photo_id: str, temp_file_path: str):
         photo.processed_at = timezone.now()
         photo.save()
 
+        from aiengine.matcher import match_guests_for_new_photo, add_photo_to_matched_guests
+
+        face_embeddings = [fe.embedding for fe in detected_faces]  # jo bhi variable-name aapke code mein embeddings ka hai
+        if face_embeddings:
+            matched_guest_ids = match_guests_for_new_photo(str(photo.event_id), face_embeddings)
+            if matched_guest_ids:
+                add_photo_to_matched_guests(str(photo.id), matched_guest_ids)
+
         logger.info(f"Photo {photo_id}: done, {len(detected_faces)} face(s) found")
 
         # Clean up the temp extracted file now that it's been read and
@@ -1736,34 +2368,56 @@ from django.test import TestCase
 ===== D:\photoflow\backend\photos\urls.py =====
 
 from django.urls import path
-from .views import EventUploadStatusView, ServeSignedFileView, ChunkedUploadView
+from .views import EventUploadStatusView, ServeSignedFileView, ChunkedUploadView, SinglePhotoUploadView
 
 urlpatterns = [
     path('<uuid:event_id>/upload-status/', EventUploadStatusView.as_view(), name='event-upload-status'),
     path('serve/', ServeSignedFileView.as_view(), name='serve-signed-file'),
     path('<uuid:event_id>/upload-chunk/', ChunkedUploadView.as_view(), name='event-upload-chunk'),
+    path('<uuid:event_id>/upload-single/', SinglePhotoUploadView.as_view(), name='upload-single')
 ]
 
 
 ===== D:\photoflow\backend\photos\views.py =====
 
 import logging
+import uuid
+import tempfile
+import hashlib 
 from pathlib import Path
 from django.conf import settings
 from rest_framework.views import APIView
 from rest_framework.response import Response
-from rest_framework import status
+from rest_framework import status, permissions 
 from rest_framework.parsers import MultiPartParser
+from rest_framework.throttling import ScopedRateThrottle
+from django.shortcuts import get_object_or_404
 
 from events.models import Event
 from photos.models import Photo
 from .tasks import process_event_zip
 from django.core.signing import TimestampSigner, BadSignature, SignatureExpired
 from django.http import HttpResponse, Http404
+from .tasks import process_single_photo
 
 logger = logging.getLogger(__name__)
 
 MAX_ZIP_BYTES = 200 * 1024 * 1024 * 1024
+MAX_SINGLE_PHOTO_BYTES = 50 * 1024 * 1024
+
+VALID_MAGIC_BYTES = {
+    b'\xff\xd8\xff': 'jpg',
+    b'\x89PNG\r\n\x1a\n': 'png',
+    b'RIFF': 'heic_container',  # some HEIC containers start with RIFF-like headers
+}
+
+def _looks_like_image(file_bytes: bytes) -> bool:
+    header = file_bytes[:12]
+    for magic in VALID_MAGIC_BYTES:
+        if header.startswith(magic):
+            return True
+    # HEIC files often have 'ftyp' a few bytes in rather than at byte 0
+    return b'ftyp' in header
 
 class EventUploadStatusView(APIView):
     authentication_classes = []
@@ -1788,6 +2442,7 @@ class EventUploadStatusView(APIView):
 class ServeSignedFileView(APIView):
     authentication_classes = []
     permission_classes = []
+    throttle_classes = []
 
     def get(self, request):
         token = request.query_params.get('token')
@@ -1913,6 +2568,63 @@ class ChunkedUploadView(APIView):
             "status": "upload_complete",
             "message": "All chunks received, processing started in background.",
         })
+
+class SinglePhotoUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser]
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'live_photo_upload'
+ 
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+ 
+        photo_file = request.FILES.get('photo')
+        if not photo_file:
+            return Response({"error": "No photo provided."}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        if photo_file.size > MAX_SINGLE_PHOTO_BYTES:
+            return Response({"error": "Photo file too large."}, status=status.HTTP_400_BAD_REQUEST)
+ 
+        file_bytes = photo_file.read()
+ 
+        if not _looks_like_image(file_bytes):
+            return Response(
+                {"error": "This file doesn't look like a valid image."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+ 
+        suffix = Path(photo_file.name).suffix or ".jpg"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+            tmp.write(file_bytes)
+            temp_file_path = tmp.name
+ 
+        file_hash = hashlib.sha256(file_bytes).hexdigest()
+ 
+        # If this exact photo was already uploaded for this event (e.g. the
+        # camera-transfer software re-sent it, or Live Sync retried after a
+        # network blip), don't crash -- just report it as already-synced.
+        existing_photo = Photo.objects.filter(event=event, file_hash=file_hash).first()
+        if existing_photo:
+            return Response({
+                "photo_id": str(existing_photo.id),
+                "status": existing_photo.status,
+                "duplicate": True,
+            }, status=status.HTTP_200_OK)
+ 
+        photo = Photo.objects.create(
+            id=uuid.uuid4(),
+            event=event,
+            original_filename=photo_file.name,
+            file_hash=file_hash,
+            status='queued',
+        )
+ 
+        process_single_photo.delay(str(photo.id), temp_file_path)
+ 
+        return Response({
+            "photo_id": str(photo.id),
+            "status": "queued",
+        }, status=status.HTTP_202_ACCEPTED)
 
 
 ===== D:\photoflow\backend\photos\__init__.py =====
