@@ -11,10 +11,11 @@ from django.shortcuts import get_object_or_404
 from django.conf import settings
 from django.http import HttpResponse, FileResponse, Http404
 
-from .models import Event, VIPProfile
+from .models import Event, VIPProfile, VideoAccessProfile, EventVideo
 from .qr_generator import generate_styled_qr_png
 from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr
 from aiengine.face_engine import detect_and_embed_faces
+from django.utils import timezone
 
 
 # ============================================================
@@ -216,7 +217,124 @@ class VIPProfileUploadView(APIView):
         )
         return Response({"id": str(vip.id), "name": vip.name}, status=status.HTTP_201_CREATED)
 
+class VideoAccessProfileUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        name = request.data.get('name', '').strip()
+        photo_file = request.FILES.get('reference_photo')
+
+        if not name or not photo_file:
+            return Response(
+                {"error": "name and reference_photo are both required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_bytes = photo_file.read()
+        try:
+            img = load_image_corrected(file_bytes)
+            cv2_image = pil_to_cv2_bgr(img)
+        except Exception:
+            return Response(
+                {"error": "We couldn't read that image. Try a different photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        faces = detect_and_embed_faces(cv2_image)
+        if not faces:
+            return Response(
+                {"error": "No clear face detected in this photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        best_face = _closest_face_to_center(faces, cv2_image.shape)
+
+        va_id = uuid.uuid4()
+        thumbnail_key = _save_face_thumbnail(cv2_image, best_face.bbox, va_id)
+
+        va = VideoAccessProfile.objects.create(
+            id=va_id,
+            event=event,
+            name=name,
+            reference_embedding=best_face.embedding.tolist(),
+            thumbnail_key=thumbnail_key,
+        )
+        return Response({"id": str(va.id), "name": va.name}, status=status.HTTP_201_CREATED)
+
+
+class VideoAccessProfileListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        profiles = event.video_access_profiles.all().values('id', 'name', 'added_by_organizer_at')
+        return Response(list(profiles))
+
+
+class VideoAccessProfileDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, event_id, va_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        va = get_object_or_404(VideoAccessProfile, id=va_id, event=event)
+        va.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+class EventVideoUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        video_file = request.FILES.get('video')
+        title = request.data.get('title', '').strip()
+        visibility = request.data.get('visibility', 'restricted')
+
+        if not video_file:
+            return Response({"error": "video file is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if visibility not in ('public', 'restricted'):
+            visibility = 'restricted'
+
+        video_id = uuid.uuid4()
+        storage_key = f"event_videos/{video_id}.mp4"
+        full_path = Path(settings.MEDIA_ROOT) / storage_key
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(full_path, 'wb') as f:
+            for chunk in video_file.chunks():
+                f.write(chunk)
+
+        ev = EventVideo.objects.create(
+            id=video_id,
+            event=event,
+            title=title,
+            storage_key=storage_key,
+            visibility=visibility,
+        )
+        return Response({"id": str(ev.id), "title": ev.title, "visibility": ev.visibility}, status=status.HTTP_201_CREATED)
+
+
+class EventVideoListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        videos = event.event_videos.all().values('id', 'title', 'visibility', 'uploaded_at')
+        return Response(list(videos))
+
+
+class EventVideoDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, event_id, video_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        ev = get_object_or_404(EventVideo, id=video_id, event=event)
+        ev.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 class VIPGroupUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -295,6 +413,25 @@ class VIPThumbnailView(APIView):
 
         return FileResponse(open(full_path, 'rb'), content_type='image/jpeg')
 
+class EventStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        warning_message = None
+        if event.is_expired():
+            days_left = event.days_until_deletion()
+            warning_message = (
+                f"Your plan has expired. All photos for this event will be "
+                f"permanently deleted in {days_left} day(s) for privacy and security reasons."
+            )
+
+        return Response({
+            "is_expired": event.is_expired(),
+            "days_until_deletion": event.days_until_deletion(),
+            "warning_message": warning_message,
+        })
 
 class VIPRenameView(APIView):
     permission_classes = [permissions.IsAuthenticated]

@@ -7,21 +7,22 @@ from rest_framework import status
 from rest_framework.parsers import MultiPartParser
 from django.core.exceptions import ValidationError
 
-from events.models import Event
+from events.models import Event, EventVideo
 from photos.models import Photo
 from .models import Guest
-from aiengine.matcher import match_vip, find_matching_photos
+from aiengine.matcher import match_vip, find_matching_photos, match_video_access
+
 
 logger = logging.getLogger(__name__)
 
 MAX_SELFIE_BYTES = 10 * 1024 * 1024
 
 
-def _signed_preview_url(storage_key: str) -> str:
+def _signed_preview_url(storage_key: str, expires_in_seconds: int = 600) -> str:
     signer = TimestampSigner()
-    token = signer.sign(storage_key)
-    expiry = 600  # 10 minutes
-    return f"{settings.BACKEND_BASE_URL}/api/photos/serve/?token={token}&max_age={expiry}"
+    payload = f"{storage_key}::{expires_in_seconds}"
+    token = signer.sign(payload)
+    return f"{settings.BACKEND_BASE_URL}/api/photos/serve/?token={token}"
 
 
 class SelfieMatchView(APIView):
@@ -33,6 +34,12 @@ class SelfieMatchView(APIView):
         event = Event.objects.filter(qr_token=qr_token, is_active=True).first()
         if not event:
             return Response({"error": "Event not found or inactive"}, status=status.HTTP_404_NOT_FOUND)
+        
+        if event.is_expired():
+            return Response(
+                {"error": "This event's subscription has expired. Please contact the organizer."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         selfie_file = request.FILES.get("selfie")
         if not selfie_file:
@@ -79,10 +86,18 @@ class SelfieMatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # --- VIP check happens FIRST, before normal photo matching ---
-        # If this face matches a pre-registered VIP/family profile, skip
-        # the normal similarity search entirely and grant access to the
-        # whole event album instead of just matched photos.
+        def _video_payload(queryset, downloadable):
+            expiry = 600 if downloadable else 1200
+            return [
+                {
+                    "video_id": str(v.id),
+                    "title": v.title,
+                    "video_url": _signed_preview_url(v.storage_key, expires_in_seconds=expiry),
+                    "downloadable": downloadable,
+                }
+                for v in queryset
+            ]
+
         vip_match = match_vip(embedding, str(event.id))
 
         if vip_match is not None:
@@ -104,29 +119,66 @@ class SelfieMatchView(APIView):
                 {
                     "photo_id": str(p.id),
                     "preview_url": _signed_preview_url(p.storage_key_preview),
-                    "similarity": None,  # not applicable for VIP access
+                    "similarity": None,
                 }
                 for p in all_photos
             ]
 
+            all_videos = EventVideo.objects.filter(event=event)
+
             return Response({
                 "guest_id": str(guest.id),
                 "is_vip": True,
+                "has_video_access": True,
                 "vip_name": vip_match.name,
                 "matched_count": len(results),
                 "photos": results,
+                "videos": _video_payload(all_videos, downloadable=True),
             })
 
-        # --- Normal guest flow: face-similarity based photo matching ---
+        video_access_match = match_video_access(embedding, str(event.id))
+
+        if video_access_match is not None:
+            guest = Guest.objects.create(
+                event=event,
+                selfie_embedding=embedding.tolist(),
+                has_video_access=True,
+            )
+
+            matches = find_matching_photos(str(event.id), embedding)
+            guest.matched_photo_ids = [m["photo_id"] for m in matches]
+            guest.save(update_fields=["matched_photo_ids"])
+
+            photo_map = {str(p.id): p for p in Photo.objects.filter(id__in=guest.matched_photo_ids)}
+            results = []
+            for m in matches:
+                photo = photo_map.get(m["photo_id"])
+                if not photo or not photo.storage_key_preview:
+                    continue
+                results.append({
+                    "photo_id": m["photo_id"],
+                    "preview_url": _signed_preview_url(photo.storage_key_preview),
+                    "similarity": round(m["similarity"], 3),
+                })
+
+            all_videos = EventVideo.objects.filter(event=event)
+
+            return Response({
+                "guest_id": str(guest.id),
+                "is_vip": False,
+                "has_video_access": True,
+                "matched_count": len(results),
+                "photos": results,
+                "videos": _video_payload(all_videos, downloadable=False),
+            })
+
         guest = Guest.objects.create(event=event, selfie_embedding=embedding.tolist())
 
         matches = find_matching_photos(str(event.id), embedding)
-
         guest.matched_photo_ids = [m["photo_id"] for m in matches]
         guest.save(update_fields=["matched_photo_ids"])
 
         photo_map = {str(p.id): p for p in Photo.objects.filter(id__in=guest.matched_photo_ids)}
-
         results = []
         for m in matches:
             photo = photo_map.get(m["photo_id"])
@@ -138,14 +190,16 @@ class SelfieMatchView(APIView):
                 "similarity": round(m["similarity"], 3),
             })
 
+        public_videos = EventVideo.objects.filter(event=event, visibility='public')
+
         return Response({
             "guest_id": str(guest.id),
             "is_vip": False,
+            "has_video_access": False,
             "matched_count": len(results),
             "photos": results,
+            "videos": _video_payload(public_videos, downloadable=True),
         })
-
-
 class RequestHDView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -275,51 +329,6 @@ class LivenessFrameCheckView(APIView):
         ear = get_ear_for_frame(cv2_image)
         return Response({"ear": ear})
     
-class CheckNewPhotosView(APIView):
-    authentication_classes = []
-    permission_classes = []
-    throttle_classes = []  
- 
-    def get(self, request, guest_id):
-        try:
-            guest = Guest.objects.filter(id=guest_id).first()
-        except (ValueError, ValidationError):
-            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
- 
-        if not guest:
-            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
- 
-        try:
-            known_count = int(request.query_params.get('known_count', 0))
-        except ValueError:
-            known_count = 0
- 
-        current_ids = guest.matched_photo_ids or []
-        total_count = len(current_ids)
- 
-        if total_count <= known_count:
-            return Response({"has_new": False, "total_count": total_count})
- 
-        new_ids = current_ids[known_count:]
-        new_photos = Photo.objects.filter(id__in=new_ids).exclude(storage_key_preview="")
- 
-        from .views import _signed_preview_url  
- 
-        results = [
-            {
-                "photo_id": str(p.id),
-                "preview_url": _signed_preview_url(p.storage_key_preview),
-            }
-            for p in new_photos
-        ]
- 
-        return Response({
-            "has_new": True,
-            "total_count": total_count,
-            "new_photos": results,
-        })
-    
-
 class CheckNewPhotosView(APIView):
     authentication_classes = []
     permission_classes = []

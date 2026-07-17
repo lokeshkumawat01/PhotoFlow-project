@@ -1,25 +1,39 @@
 @import "tailwindcss";
 
 @theme {
-  --color-ink: #1f1f1f;
-  --color-muted: #6e6e6e;
-  --color-coral: #eb8783;
-  --color-coral-dark: #d96b66;
-  --color-coral-tint: #fdf0ef;
-  --color-hairline: #efefef;
+  --color-bg: #FAFAF8;
+  --color-bg-secondary: #F4F4F2;
+  --color-ink: #161616;
+  --color-muted: #666666;
+  --color-gold: #C89B63;
+  --color-gold-dark: #B98749;
+  --color-success: #2E7D62;
+  --color-danger: #C44F4F;
+  --color-hairline: rgba(22, 22, 22, 0.08);
 
   --font-body: var(--font-body), sans-serif;
-  --font-mono: var(--font-mono), monospace;
+  --font-heading: var(--font-heading), sans-serif;
 }
 
-html {
-  background: #ffffff;
+html, body {
+  overflow-x: hidden;
+  width: 100%;
+  max-width: 100%;
+  background: var(--color-bg);
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
 }
 
 body {
-  background: #ffffff;
   color: var(--color-ink);
   font-family: var(--font-body);
+}
+
+h1, h2, h3 {
+  font-family: var(--font-heading), var(--font-body), sans-serif;
+  letter-spacing: -0.015em;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -32,35 +46,40 @@ body {
 }
 
 .focus-ring:focus-visible {
-  outline: 2px solid var(--color-coral);
+  outline: 2px solid var(--color-gold);
   outline-offset: 2px;
 }
 
+/* 👇 SINGLE SOURCE OF TRUTH for section containers. Always use this class only. */
+.container-page {
+  width: 100%;
+  max-width: 1600px;
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: clamp(1.25rem, 4vw, 4rem);
+  padding-right: clamp(1.25rem, 4vw, 4rem);
+}
+
+/* Premium glass card — used by <Card /> */
+.glass-card {
+  background: rgba(255, 255, 255, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-hairline);
+  box-shadow: 0 8px 30px -12px rgba(22, 22, 22, 0.08);
+}
+
 .lift-on-hover {
-  transition: transform 0.25s ease, box-shadow 0.25s ease;
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
 }
 .lift-on-hover:hover {
   transform: translateY(-4px);
-  box-shadow: 0 16px 32px -8px rgba(235, 135, 131, 0.25);
+  box-shadow: 0 20px 40px -14px rgba(200, 155, 99, 0.25);
 }
 
-.btn-primary {
-  background: var(--color-coral);
-  color: white;
-  transition: background 0.2s ease, transform 0.2s ease;
-}
-.btn-primary:hover {
-  background: var(--color-coral-dark);
-  transform: translateY(-2px);
-}
-
-.btn-secondary {
-  background: white;
-  color: var(--color-ink);
-  border: 1.5px solid var(--color-hairline);
-  transition: border-color 0.2s ease, transform 0.2s ease;
-}
-.btn-secondary:hover {
-  border-color: var(--color-coral);
-  transform: translateY(-2px);
+.gold-gradient-text {
+  background: linear-gradient(120deg, #C89B63, #E8C89A, #B98749);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }

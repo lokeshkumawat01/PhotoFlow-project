@@ -1,9 +1,10 @@
 import numpy as np
 from photos.models import FaceEmbedding
 from pgvector.django import CosineDistance
-from events.models import VIPProfile
+from events.models import VIPProfile, VideoAccessProfile
 
-VIP_MATCH_THRESHOLD = 0.35
+VIP_MATCH_THRESHOLD = 0.6
+VIDEO_ACCESS_MATCH_THRESHOLD = 0.6
 GUEST_MATCH_THRESHOLD = 0.6
 
 def find_matching_photos(event_id: str, query_embedding, threshold: float = 0.45):
@@ -46,6 +47,20 @@ def match_vip(guest_embedding, event_id):
 
     if closest_vip is not None and closest_vip.distance <= VIP_MATCH_THRESHOLD:
         return closest_vip
+
+    return None
+
+def match_video_access(guest_embedding, event_id):
+    closest = (
+        VideoAccessProfile.objects
+        .filter(event_id=event_id)
+        .annotate(distance=CosineDistance('reference_embedding', guest_embedding))
+        .order_by('distance')
+        .first()
+    )
+
+    if closest is not None and closest.distance <= VIDEO_ACCESS_MATCH_THRESHOLD:
+        return closest
 
     return None
 

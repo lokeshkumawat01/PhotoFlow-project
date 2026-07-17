@@ -9,6 +9,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions 
 from rest_framework.parsers import MultiPartParser
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 
 from events.models import Event
@@ -38,13 +39,11 @@ def _looks_like_image(file_bytes: bytes) -> bool:
     return b'ftyp' in header
 
 class EventUploadStatusView(APIView):
-    authentication_classes = []
-    permission_classes = []
-    throttle_classes = []
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, event_id):
         try:
-            event = Event.objects.get(id=event_id)
+            event = Event.objects.filter(id=event_id, organizer=request.user).first()
         except Event.DoesNotExist:
             return Response({'error': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -57,6 +56,9 @@ class EventUploadStatusView(APIView):
             'failed': photos.filter(status='failed').count(),
         })
     
+import mimetypes
+from django.http import FileResponse
+
 class ServeSignedFileView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -64,47 +66,57 @@ class ServeSignedFileView(APIView):
 
     def get(self, request):
         token = request.query_params.get('token')
-        max_age = int(request.query_params.get('max_age', 600))  # default 10 min
-
         if not token:
             raise Http404("Missing token")
 
+        # NOTE: max_age ab client se accept NAHI hota -- token ke andar hi
+        # embedded hai (signing ke waqt), isliye ise tamper nahi kiya ja sakta.
         signer = TimestampSigner()
         try:
-            storage_key = signer.unsign(token, max_age=max_age)
+            # Payload format: "storage_key::max_age_seconds"
+            payload = signer.unsign(token, max_age=settings.SIGNED_URL_HARD_LIMIT_SECONDS)
         except SignatureExpired:
             return Response({'error': 'Link expired, please refresh.'}, status=status.HTTP_410_GONE)
         except BadSignature:
             raise Http404("Invalid token")
 
-        from django.conf import settings
-        from pathlib import Path
+        try:
+            storage_key, embedded_max_age_str = payload.rsplit('::', 1)
+            embedded_max_age = int(embedded_max_age_str)
+        except (ValueError, TypeError):
+            raise Http404("Invalid token")
+
+        # Ab dobara, is baar iske intended (server-decided) expiry ke saath check karo
+        try:
+            signer.unsign(token, max_age=embedded_max_age)
+        except SignatureExpired:
+            return Response({'error': 'Link expired, please refresh.'}, status=status.HTTP_410_GONE)
 
         full_path = Path(settings.MEDIA_ROOT) / storage_key
         if not full_path.exists():
             raise Http404("File not found")
 
-        with open(full_path, 'rb') as f:
-            file_bytes = f.read()
+        content_type, _ = mimetypes.guess_type(str(full_path))
+        if not content_type:
+            content_type = 'application/octet-stream'
 
-        content_type = 'image/jpeg'
-        if storage_key.lower().endswith('.png'):
-            content_type = 'image/png'
-
-        response = HttpResponse(file_bytes, content_type=content_type)
-        response['Cache-Control'] = 'private, no-store'  # browser cache na kare
+        # FileResponse Django mein automatically HTTP Range requests handle
+        # karta hai -- iske wajah se video seek/scrub sahi se kaam karega,
+        # aur poori file ek saath memory mein load nahi hoti.
+        response = FileResponse(open(full_path, 'rb'), content_type=content_type)
+        response['Cache-Control'] = 'private, no-store'
+        response['X-Content-Type-Options'] = 'nosniff'
+        response['Content-Disposition'] = 'inline'  # save-dialog trigger na ho
         return response
     
 class ChunkedUploadView(APIView):
-    authentication_classes = []
-    permission_classes = []
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser]
-    throttle_classes = []
 
     def post(self, request, event_id):
         from events.models import Event
 
-        event = Event.objects.filter(id=event_id).first()
+        event = Event.objects.filter(id=event_id, organizer=request.user).first()
         if not event:
             return Response({"error": "Event not found"}, status=status.HTTP_404_NOT_FOUND)
 

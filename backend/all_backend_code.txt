@@ -394,9 +394,10 @@ def get_ear_for_frame(frame_bgr) -> float | None:
 import numpy as np
 from photos.models import FaceEmbedding
 from pgvector.django import CosineDistance
-from events.models import VIPProfile
+from events.models import VIPProfile, VideoAccessProfile
 
-VIP_MATCH_THRESHOLD = 0.35
+VIP_MATCH_THRESHOLD = 0.6
+VIDEO_ACCESS_MATCH_THRESHOLD = 0.6
 GUEST_MATCH_THRESHOLD = 0.6
 
 def find_matching_photos(event_id: str, query_embedding, threshold: float = 0.45):
@@ -439,6 +440,20 @@ def match_vip(guest_embedding, event_id):
 
     if closest_vip is not None and closest_vip.distance <= VIP_MATCH_THRESHOLD:
         return closest_vip
+
+    return None
+
+def match_video_access(guest_embedding, event_id):
+    closest = (
+        VideoAccessProfile.objects
+        .filter(event_id=event_id)
+        .annotate(distance=CosineDistance('reference_embedding', guest_embedding))
+        .order_by('distance')
+        .first()
+    )
+
+    if closest is not None and closest.distance <= VIDEO_ACCESS_MATCH_THRESHOLD:
+        return closest
 
     return None
 
@@ -525,12 +540,20 @@ application = get_asgi_application()
 
 import os
 from celery import Celery
+from celery.schedules import crontab
 
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'core.settings')
 
 app = Celery('photoflow')
 app.config_from_object('django.conf:settings', namespace='CELERY')
 app.autodiscover_tasks()
+
+app.conf.beat_schedule = {
+    'delete-expired-event-photos-daily': {
+        'task': 'photos.tasks.delete_expired_event_photos',
+        'schedule': crontab(hour=6, minute=0),
+    },
+}
 
 
 ===== D:\photoflow\backend\core\exception_handlers.py =====
@@ -614,7 +637,6 @@ INSTALLED_APPS = [
     'photos',
     'guests',
     'aiengine',
-    'highlights',
     'accounts',
 ]
 
@@ -701,6 +723,7 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 MEDIA_ROOT = BASE_DIR / 'media'
+SIGNED_URL_HARD_LIMIT_SECONDS = 3600
 
 FRONTEND_BASE_URL = os.environ.get('FRONTEND_BASE_URL')
 BACKEND_BASE_URL = os.environ.get('BACKEND_BASE_URL')
@@ -716,6 +739,7 @@ CELERY_TASK_TRACK_STARTED = True
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 50 
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 50
+
 
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'core.exception_handlers.custom_exception_handler',
@@ -833,6 +857,8 @@ class EventsConfig(AppConfig):
 import uuid
 from django.db import models
 from pgvector.django import VectorField
+from django.utils import timezone
+from datetime import timedelta
 
 
 class Event(models.Model):
@@ -858,6 +884,25 @@ class Event(models.Model):
         self.plan_type = new_plan_type
         self.save(update_fields=['plan_type'])
 
+    def is_expired(self):
+        expiry_days = self.PLAN_EXPIRY_DAYS.get(self.plan_type, 7)
+        expiry_date = self.created_at + timedelta(days=expiry_days)
+        return timezone.now() > expiry_date
+    
+    def deletion_due_date(self):
+        expiry_days = self.PLAN_EXPIRY_DAYS.get(self.plan_type, 7)
+        expiry_date = self.created_at + timedelta(days=expiry_days)
+        return expiry_date + timedelta(days=7)
+
+    def is_due_for_deletion(self):
+        return timezone.now() > self.deletion_due_date()
+
+    def days_until_deletion(self):
+        if not self.is_expired():
+            return None
+        remaining = self.deletion_due_date() - timezone.now()
+        return max(0, remaining.days)
+    
     def __str__(self):
         return f"{self.name} ({self.plan_type})"
 
@@ -872,6 +917,45 @@ class PlanLimit(models.Model):
     def __str__(self):
         return self.plan_type
 
+class VideoAccessProfile(models.Model):
+    """
+    Close friends/family jo sab videos dekh sakte hain lekin sirf apni
+    matched photos -- VIP jaisa nahi (VIP ko SAB photos milti hain).
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event = models.ForeignKey('events.Event', on_delete=models.CASCADE, related_name='video_access_profiles')
+    name = models.CharField(max_length=100, blank=True)
+    reference_embedding = VectorField(dimensions=512)
+    thumbnail_key = models.CharField(max_length=255, blank=True)
+    added_by_organizer_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'events_videoaccessprofile'
+        indexes = [models.Index(fields=['event'])]
+
+    def __str__(self):
+        return f"VideoAccess: {self.name} ({self.event.name})"
+
+
+class EventVideo(models.Model):
+    """
+    Admin ka video library -- prewedding teaser jaisi cheezein, ya
+    video-access members ke liye general videos.
+    """
+    VISIBILITY_CHOICES = [
+        ('public', 'Everyone'),
+        ('restricted', 'VIP + Video-Access only'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    event = models.ForeignKey('events.Event', on_delete=models.CASCADE, related_name='event_videos')
+    title = models.CharField(max_length=200, blank=True)
+    storage_key = models.CharField(max_length=255)
+    visibility = models.CharField(max_length=20, choices=VISIBILITY_CHOICES, default='restricted')
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self):
+        return f"{self.title or 'Untitled video'} ({self.visibility}) @ {self.event.name}"
 
 class VIPProfile(models.Model):
     """
@@ -1080,6 +1164,13 @@ from .views import (
     VIPProfileDeleteView,
     VIPRenameView,
     VIPThumbnailView,
+    EventStatusView,
+    VideoAccessProfileUploadView,
+    VideoAccessProfileListView,
+    VideoAccessProfileDeleteView,
+    EventVideoUploadView,
+    EventVideoListView,
+    EventVideoDeleteView,
 )
 
 urlpatterns = [
@@ -1093,6 +1184,16 @@ urlpatterns = [
     path('<uuid:event_id>/vip/<uuid:vip_id>/', VIPProfileDeleteView.as_view(), name='vip-delete'),
     path('<uuid:event_id>/vip/<uuid:vip_id>/rename/', VIPRenameView.as_view(), name='vip-rename'),
     path('<uuid:event_id>/vip/<uuid:vip_id>/thumbnail/', VIPThumbnailView.as_view(), name='vip-thumbnail'),
+
+    path('<uuid:event_id>/status/', EventStatusView.as_view(), name='event-status'),
+
+    path('<uuid:event_id>/video-access/', VideoAccessProfileUploadView.as_view(), name='video-access-upload'),
+    path('<uuid:event_id>/video-access/list/', VideoAccessProfileListView.as_view(), name='video-access-list'),
+    path('<uuid:event_id>/video-access/<uuid:va_id>/', VideoAccessProfileDeleteView.as_view(), name='video-access-delete'),
+
+    path('<uuid:event_id>/videos/', EventVideoUploadView.as_view(), name='event-video-upload'),
+    path('<uuid:event_id>/videos/list/', EventVideoListView.as_view(), name='event-video-list'),
+    path('<uuid:event_id>/videos/<uuid:video_id>/', EventVideoDeleteView.as_view(), name='event-video-delete'),
 ]
 
 
@@ -1111,10 +1212,11 @@ from django.shortcuts import get_object_or_404
 from django.conf import settings
 from django.http import HttpResponse, FileResponse, Http404
 
-from .models import Event, VIPProfile
+from .models import Event, VIPProfile, VideoAccessProfile, EventVideo
 from .qr_generator import generate_styled_qr_png
 from photos.utils.image_processing import load_image_corrected, pil_to_cv2_bgr
 from aiengine.face_engine import detect_and_embed_faces
+from django.utils import timezone
 
 
 # ============================================================
@@ -1316,7 +1418,124 @@ class VIPProfileUploadView(APIView):
         )
         return Response({"id": str(vip.id), "name": vip.name}, status=status.HTTP_201_CREATED)
 
+class VideoAccessProfileUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
 
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        name = request.data.get('name', '').strip()
+        photo_file = request.FILES.get('reference_photo')
+
+        if not name or not photo_file:
+            return Response(
+                {"error": "name and reference_photo are both required."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        file_bytes = photo_file.read()
+        try:
+            img = load_image_corrected(file_bytes)
+            cv2_image = pil_to_cv2_bgr(img)
+        except Exception:
+            return Response(
+                {"error": "We couldn't read that image. Try a different photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        faces = detect_and_embed_faces(cv2_image)
+        if not faces:
+            return Response(
+                {"error": "No clear face detected in this photo."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        best_face = _closest_face_to_center(faces, cv2_image.shape)
+
+        va_id = uuid.uuid4()
+        thumbnail_key = _save_face_thumbnail(cv2_image, best_face.bbox, va_id)
+
+        va = VideoAccessProfile.objects.create(
+            id=va_id,
+            event=event,
+            name=name,
+            reference_embedding=best_face.embedding.tolist(),
+            thumbnail_key=thumbnail_key,
+        )
+        return Response({"id": str(va.id), "name": va.name}, status=status.HTTP_201_CREATED)
+
+
+class VideoAccessProfileListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        profiles = event.video_access_profiles.all().values('id', 'name', 'added_by_organizer_at')
+        return Response(list(profiles))
+
+
+class VideoAccessProfileDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, event_id, va_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        va = get_object_or_404(VideoAccessProfile, id=va_id, event=event)
+        va.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+class EventVideoUploadView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        video_file = request.FILES.get('video')
+        title = request.data.get('title', '').strip()
+        visibility = request.data.get('visibility', 'restricted')
+
+        if not video_file:
+            return Response({"error": "video file is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        if visibility not in ('public', 'restricted'):
+            visibility = 'restricted'
+
+        video_id = uuid.uuid4()
+        storage_key = f"event_videos/{video_id}.mp4"
+        full_path = Path(settings.MEDIA_ROOT) / storage_key
+        full_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(full_path, 'wb') as f:
+            for chunk in video_file.chunks():
+                f.write(chunk)
+
+        ev = EventVideo.objects.create(
+            id=video_id,
+            event=event,
+            title=title,
+            storage_key=storage_key,
+            visibility=visibility,
+        )
+        return Response({"id": str(ev.id), "title": ev.title, "visibility": ev.visibility}, status=status.HTTP_201_CREATED)
+
+
+class EventVideoListView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        videos = event.event_videos.all().values('id', 'title', 'visibility', 'uploaded_at')
+        return Response(list(videos))
+
+
+class EventVideoDeleteView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def delete(self, request, event_id, video_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+        ev = get_object_or_404(EventVideo, id=video_id, event=event)
+        ev.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)
 class VIPGroupUploadView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser]
@@ -1395,6 +1614,25 @@ class VIPThumbnailView(APIView):
 
         return FileResponse(open(full_path, 'rb'), content_type='image/jpeg')
 
+class EventStatusView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, event_id):
+        event = get_object_or_404(Event, id=event_id, organizer=request.user)
+
+        warning_message = None
+        if event.is_expired():
+            days_left = event.days_until_deletion()
+            warning_message = (
+                f"Your plan has expired. All photos for this event will be "
+                f"permanently deleted in {days_left} day(s) for privacy and security reasons."
+            )
+
+        return Response({
+            "is_expired": event.is_expired(),
+            "days_until_deletion": event.days_until_deletion(),
+            "warning_message": warning_message,
+        })
 
 class VIPRenameView(APIView):
     permission_classes = [permissions.IsAuthenticated]
@@ -1475,6 +1713,8 @@ class Guest(models.Model):
     is_vip = models.BooleanField(default=False)         
     vip_name = models.CharField(max_length=100, blank=True) 
 
+    has_video_access = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     last_accessed_at = models.DateTimeField(auto_now=True)
 
@@ -1535,21 +1775,22 @@ from rest_framework import status
 from rest_framework.parsers import MultiPartParser
 from django.core.exceptions import ValidationError
 
-from events.models import Event
+from events.models import Event, EventVideo
 from photos.models import Photo
 from .models import Guest
-from aiengine.matcher import match_vip, find_matching_photos
+from aiengine.matcher import match_vip, find_matching_photos, match_video_access
+
 
 logger = logging.getLogger(__name__)
 
 MAX_SELFIE_BYTES = 10 * 1024 * 1024
 
 
-def _signed_preview_url(storage_key: str) -> str:
+def _signed_preview_url(storage_key: str, expires_in_seconds: int = 600) -> str:
     signer = TimestampSigner()
-    token = signer.sign(storage_key)
-    expiry = 600  # 10 minutes
-    return f"{settings.BACKEND_BASE_URL}/api/photos/serve/?token={token}&max_age={expiry}"
+    payload = f"{storage_key}::{expires_in_seconds}"
+    token = signer.sign(payload)
+    return f"{settings.BACKEND_BASE_URL}/api/photos/serve/?token={token}"
 
 
 class SelfieMatchView(APIView):
@@ -1561,6 +1802,12 @@ class SelfieMatchView(APIView):
         event = Event.objects.filter(qr_token=qr_token, is_active=True).first()
         if not event:
             return Response({"error": "Event not found or inactive"}, status=status.HTTP_404_NOT_FOUND)
+        
+        if event.is_expired():
+            return Response(
+                {"error": "This event's subscription has expired. Please contact the organizer."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
 
         selfie_file = request.FILES.get("selfie")
         if not selfie_file:
@@ -1607,10 +1854,18 @@ class SelfieMatchView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # --- VIP check happens FIRST, before normal photo matching ---
-        # If this face matches a pre-registered VIP/family profile, skip
-        # the normal similarity search entirely and grant access to the
-        # whole event album instead of just matched photos.
+        def _video_payload(queryset, downloadable):
+            expiry = 600 if downloadable else 1200
+            return [
+                {
+                    "video_id": str(v.id),
+                    "title": v.title,
+                    "video_url": _signed_preview_url(v.storage_key, expires_in_seconds=expiry),
+                    "downloadable": downloadable,
+                }
+                for v in queryset
+            ]
+
         vip_match = match_vip(embedding, str(event.id))
 
         if vip_match is not None:
@@ -1632,29 +1887,66 @@ class SelfieMatchView(APIView):
                 {
                     "photo_id": str(p.id),
                     "preview_url": _signed_preview_url(p.storage_key_preview),
-                    "similarity": None,  # not applicable for VIP access
+                    "similarity": None,
                 }
                 for p in all_photos
             ]
 
+            all_videos = EventVideo.objects.filter(event=event)
+
             return Response({
                 "guest_id": str(guest.id),
                 "is_vip": True,
+                "has_video_access": True,
                 "vip_name": vip_match.name,
                 "matched_count": len(results),
                 "photos": results,
+                "videos": _video_payload(all_videos, downloadable=True),
             })
 
-        # --- Normal guest flow: face-similarity based photo matching ---
+        video_access_match = match_video_access(embedding, str(event.id))
+
+        if video_access_match is not None:
+            guest = Guest.objects.create(
+                event=event,
+                selfie_embedding=embedding.tolist(),
+                has_video_access=True,
+            )
+
+            matches = find_matching_photos(str(event.id), embedding)
+            guest.matched_photo_ids = [m["photo_id"] for m in matches]
+            guest.save(update_fields=["matched_photo_ids"])
+
+            photo_map = {str(p.id): p for p in Photo.objects.filter(id__in=guest.matched_photo_ids)}
+            results = []
+            for m in matches:
+                photo = photo_map.get(m["photo_id"])
+                if not photo or not photo.storage_key_preview:
+                    continue
+                results.append({
+                    "photo_id": m["photo_id"],
+                    "preview_url": _signed_preview_url(photo.storage_key_preview),
+                    "similarity": round(m["similarity"], 3),
+                })
+
+            all_videos = EventVideo.objects.filter(event=event)
+
+            return Response({
+                "guest_id": str(guest.id),
+                "is_vip": False,
+                "has_video_access": True,
+                "matched_count": len(results),
+                "photos": results,
+                "videos": _video_payload(all_videos, downloadable=False),
+            })
+
         guest = Guest.objects.create(event=event, selfie_embedding=embedding.tolist())
 
         matches = find_matching_photos(str(event.id), embedding)
-
         guest.matched_photo_ids = [m["photo_id"] for m in matches]
         guest.save(update_fields=["matched_photo_ids"])
 
         photo_map = {str(p.id): p for p in Photo.objects.filter(id__in=guest.matched_photo_ids)}
-
         results = []
         for m in matches:
             photo = photo_map.get(m["photo_id"])
@@ -1666,14 +1958,16 @@ class SelfieMatchView(APIView):
                 "similarity": round(m["similarity"], 3),
             })
 
+        public_videos = EventVideo.objects.filter(event=event, visibility='public')
+
         return Response({
             "guest_id": str(guest.id),
             "is_vip": False,
+            "has_video_access": False,
             "matched_count": len(results),
             "photos": results,
+            "videos": _video_payload(public_videos, downloadable=True),
         })
-
-
 class RequestHDView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -1806,51 +2100,6 @@ class LivenessFrameCheckView(APIView):
 class CheckNewPhotosView(APIView):
     authentication_classes = []
     permission_classes = []
-    throttle_classes = []  
- 
-    def get(self, request, guest_id):
-        try:
-            guest = Guest.objects.filter(id=guest_id).first()
-        except (ValueError, ValidationError):
-            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
- 
-        if not guest:
-            return Response({"error": "Invalid guest session"}, status=status.HTTP_400_BAD_REQUEST)
- 
-        try:
-            known_count = int(request.query_params.get('known_count', 0))
-        except ValueError:
-            known_count = 0
- 
-        current_ids = guest.matched_photo_ids or []
-        total_count = len(current_ids)
- 
-        if total_count <= known_count:
-            return Response({"has_new": False, "total_count": total_count})
- 
-        new_ids = current_ids[known_count:]
-        new_photos = Photo.objects.filter(id__in=new_ids).exclude(storage_key_preview="")
- 
-        from .views import _signed_preview_url  
- 
-        results = [
-            {
-                "photo_id": str(p.id),
-                "preview_url": _signed_preview_url(p.storage_key_preview),
-            }
-            for p in new_photos
-        ]
- 
-        return Response({
-            "has_new": True,
-            "total_count": total_count,
-            "new_photos": results,
-        })
-    
-
-class CheckNewPhotosView(APIView):
-    authentication_classes = []
-    permission_classes = []
     throttle_classes = []
  
     def get(self, request, guest_id):
@@ -1904,73 +2153,6 @@ class CheckNewPhotosView(APIView):
 
 
 ===== D:\photoflow\backend\guests\__init__.py =====
-
-
-
-===== D:\photoflow\backend\highlights\utils\video_builder.py =====
-
-
-
-===== D:\photoflow\backend\highlights\utils\__init__.py =====
-
-
-
-===== D:\photoflow\backend\highlights\admin.py =====
-
-from django.contrib import admin
-
-# Register your models here.
-
-
-===== D:\photoflow\backend\highlights\apps.py =====
-
-from django.apps import AppConfig
-
-
-class HighlightsConfig(AppConfig):
-    name = 'highlights'
-
-
-===== D:\photoflow\backend\highlights\models.py =====
-
-import uuid 
-from django.db import models
-from guests.models import Guest
-
-# Create your models here.
-class HighlightReel(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4)
-    guest = models.ForeignKey(Guest, on_delete=models.CASCADE)
-    video_storage_key = models.CharField(max_length=255, null=True)
-    status = models.CharField(choices=[('queued','queued'),('processing','processing'),
-                                        ('done','done'),('failed','failed')], default='queued')
-    music_track = models.CharField(max_length=100, default='default')
-    created_at = models.DateTimeField(auto_now_add=True)
-
-
-===== D:\photoflow\backend\highlights\tasks.py =====
-
-
-
-===== D:\photoflow\backend\highlights\tests.py =====
-
-from django.test import TestCase
-
-# Create your tests here.
-
-
-===== D:\photoflow\backend\highlights\urls.py =====
-
-
-
-===== D:\photoflow\backend\highlights\views.py =====
-
-from django.shortcuts import render
-
-# Create your views here.
-
-
-===== D:\photoflow\backend\highlights\__init__.py =====
 
 
 
@@ -2357,6 +2539,35 @@ def retry_failed_event_photos(event_id: str):
         "missing_files": missing_count
     }
 
+@shared_task
+def delete_expired_event_photos():
+    from events.models import Event
+    from photos.models import Photo
+
+    deleted_events_count = 0
+
+    for event in Event.objects.filter(is_active=True):
+        if not event.is_due_for_deletion():
+            continue
+
+        photos = Photo.objects.filter(event=event)
+        if not photos.exists():
+            continue  # already cleaned up pehle
+
+        for photo in photos:
+            for storage_key in (photo.storage_key_preview, photo.storage_key_hd):
+                if storage_key:
+                    file_path = Path(settings.MEDIA_ROOT) / storage_key
+                    if file_path.exists():
+                        file_path.unlink()
+
+        deleted_count = photos.count()
+        photos.delete()  # cascade se FaceEmbedding bhi chala jaayega
+        deleted_events_count += 1
+        logger.info(f"Deleted {deleted_count} photos for expired event {event.id}")
+
+    return f"Cleaned up photos for {deleted_events_count} expired event(s)"
+
 
 ===== D:\photoflow\backend\photos\tests.py =====
 
@@ -2391,6 +2602,7 @@ from rest_framework.response import Response
 from rest_framework import status, permissions 
 from rest_framework.parsers import MultiPartParser
 from rest_framework.throttling import ScopedRateThrottle
+from rest_framework.permissions import IsAuthenticated
 from django.shortcuts import get_object_or_404
 
 from events.models import Event
@@ -2420,13 +2632,11 @@ def _looks_like_image(file_bytes: bytes) -> bool:
     return b'ftyp' in header
 
 class EventUploadStatusView(APIView):
-    authentication_classes = []
-    permission_classes = []
-    throttle_classes = []
+    permission_classes = [IsAuthenticated]
 
     def get(self, request, event_id):
         try:
-            event = Event.objects.get(id=event_id)
+            event = Event.objects.filter(id=event_id, organizer=request.user).first()
         except Event.DoesNotExist:
             return Response({'error': 'Event not found'}, status=status.HTTP_404_NOT_FOUND)
 
@@ -2439,6 +2649,9 @@ class EventUploadStatusView(APIView):
             'failed': photos.filter(status='failed').count(),
         })
     
+import mimetypes
+from django.http import FileResponse
+
 class ServeSignedFileView(APIView):
     authentication_classes = []
     permission_classes = []
@@ -2446,47 +2659,57 @@ class ServeSignedFileView(APIView):
 
     def get(self, request):
         token = request.query_params.get('token')
-        max_age = int(request.query_params.get('max_age', 600))  # default 10 min
-
         if not token:
             raise Http404("Missing token")
 
+        # NOTE: max_age ab client se accept NAHI hota -- token ke andar hi
+        # embedded hai (signing ke waqt), isliye ise tamper nahi kiya ja sakta.
         signer = TimestampSigner()
         try:
-            storage_key = signer.unsign(token, max_age=max_age)
+            # Payload format: "storage_key::max_age_seconds"
+            payload = signer.unsign(token, max_age=settings.SIGNED_URL_HARD_LIMIT_SECONDS)
         except SignatureExpired:
             return Response({'error': 'Link expired, please refresh.'}, status=status.HTTP_410_GONE)
         except BadSignature:
             raise Http404("Invalid token")
 
-        from django.conf import settings
-        from pathlib import Path
+        try:
+            storage_key, embedded_max_age_str = payload.rsplit('::', 1)
+            embedded_max_age = int(embedded_max_age_str)
+        except (ValueError, TypeError):
+            raise Http404("Invalid token")
+
+        # Ab dobara, is baar iske intended (server-decided) expiry ke saath check karo
+        try:
+            signer.unsign(token, max_age=embedded_max_age)
+        except SignatureExpired:
+            return Response({'error': 'Link expired, please refresh.'}, status=status.HTTP_410_GONE)
 
         full_path = Path(settings.MEDIA_ROOT) / storage_key
         if not full_path.exists():
             raise Http404("File not found")
 
-        with open(full_path, 'rb') as f:
-            file_bytes = f.read()
+        content_type, _ = mimetypes.guess_type(str(full_path))
+        if not content_type:
+            content_type = 'application/octet-stream'
 
-        content_type = 'image/jpeg'
-        if storage_key.lower().endswith('.png'):
-            content_type = 'image/png'
-
-        response = HttpResponse(file_bytes, content_type=content_type)
-        response['Cache-Control'] = 'private, no-store'  # browser cache na kare
+        # FileResponse Django mein automatically HTTP Range requests handle
+        # karta hai -- iske wajah se video seek/scrub sahi se kaam karega,
+        # aur poori file ek saath memory mein load nahi hoti.
+        response = FileResponse(open(full_path, 'rb'), content_type=content_type)
+        response['Cache-Control'] = 'private, no-store'
+        response['X-Content-Type-Options'] = 'nosniff'
+        response['Content-Disposition'] = 'inline'  # save-dialog trigger na ho
         return response
     
 class ChunkedUploadView(APIView):
-    authentication_classes = []
-    permission_classes = []
+    permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser]
-    throttle_classes = []
 
     def post(self, request, event_id):
         from events.models import Event
 
-        event = Event.objects.filter(id=event_id).first()
+        event = Event.objects.filter(id=event_id, organizer=request.user).first()
         if not event:
             return Response({"error": "Event not found"}, status=status.HTTP_404_NOT_FOUND)
 

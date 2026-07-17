@@ -21,6 +21,8 @@ class Guest(models.Model):
     is_vip = models.BooleanField(default=False)         
     vip_name = models.CharField(max_length=100, blank=True) 
 
+    has_video_access = models.BooleanField(default=False)
+
     created_at = models.DateTimeField(auto_now_add=True)
     last_accessed_at = models.DateTimeField(auto_now=True)
 

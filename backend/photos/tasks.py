@@ -223,3 +223,32 @@ def retry_failed_event_photos(event_id: str):
         "requeued": requeued_count,
         "missing_files": missing_count
     }
+
+@shared_task
+def delete_expired_event_photos():
+    from events.models import Event
+    from photos.models import Photo
+
+    deleted_events_count = 0
+
+    for event in Event.objects.filter(is_active=True):
+        if not event.is_due_for_deletion():
+            continue
+
+        photos = Photo.objects.filter(event=event)
+        if not photos.exists():
+            continue  # already cleaned up pehle
+
+        for photo in photos:
+            for storage_key in (photo.storage_key_preview, photo.storage_key_hd):
+                if storage_key:
+                    file_path = Path(settings.MEDIA_ROOT) / storage_key
+                    if file_path.exists():
+                        file_path.unlink()
+
+        deleted_count = photos.count()
+        photos.delete()  # cascade se FaceEmbedding bhi chala jaayega
+        deleted_events_count += 1
+        logger.info(f"Deleted {deleted_count} photos for expired event {event.id}")
+
+    return f"Cleaned up photos for {deleted_events_count} expired event(s)"

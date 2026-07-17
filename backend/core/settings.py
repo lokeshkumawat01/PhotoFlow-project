@@ -47,7 +47,6 @@ INSTALLED_APPS = [
     'photos',
     'guests',
     'aiengine',
-    'highlights',
     'accounts',
 ]
 
@@ -134,6 +133,7 @@ USE_TZ = True
 STATIC_URL = 'static/'
 
 MEDIA_ROOT = BASE_DIR / 'media'
+SIGNED_URL_HARD_LIMIT_SECONDS = 3600
 
 FRONTEND_BASE_URL = os.environ.get('FRONTEND_BASE_URL')
 BACKEND_BASE_URL = os.environ.get('BACKEND_BASE_URL')
@@ -149,6 +149,7 @@ CELERY_TASK_TRACK_STARTED = True
 
 DATA_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 50 
 FILE_UPLOAD_MAX_MEMORY_SIZE = 1024 * 1024 * 50
+
 
 REST_FRAMEWORK = {
     'EXCEPTION_HANDLER': 'core.exception_handlers.custom_exception_handler',
@@ -167,7 +168,6 @@ REST_FRAMEWORK = {
         'user': '60/minute',
         'auth_register': '5/hour',
         'event_create': '20/hour',
-        'highlight_generate': '10/hour',
         'live_photo_upload': '1000/minute', 
     },
 }
