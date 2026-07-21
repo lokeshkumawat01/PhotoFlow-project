@@ -72,7 +72,7 @@ export default function PageLoader() {
  * -- AI face matching -- instead of a generic spinner.
  */
 function FaceScanFrame() {
-  const bracketBase = "absolute w-5 h-5 border-[var(--color-gold)]";
+  const bracketBase = "absolute w-5 h-5 border-[var(--color-accent)]";
 
   return (
     <div className="relative w-16 h-16">
@@ -84,15 +84,15 @@ function FaceScanFrame() {
       <motion.div
         className="absolute left-1.5 right-1.5 h-[2px] rounded-full"
         style={{
-          background: "linear-gradient(90deg, transparent, var(--color-gold), transparent)",
-          boxShadow: "0 0 8px 1px var(--color-gold)",
+          background: "linear-gradient(90deg, transparent, var(--color-accent), transparent)",
+          boxShadow: "0 0 8px 1px var(--color-accent)",
         }}
         animate={{ top: ["6px", "58px", "6px"] }}
         transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
       />
 
       <motion.div
-        className="absolute inset-3 rounded-full border border-[var(--color-gold)]/40"
+        className="absolute inset-3 rounded-full border border-[var(--color-accent)]/40"
         animate={{ scale: [0.9, 1.15, 0.9], opacity: [0.5, 0, 0.5] }}
         transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
       />

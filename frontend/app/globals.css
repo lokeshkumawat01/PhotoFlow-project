@@ -1,25 +1,59 @@
 @import "tailwindcss";
 
-@theme {
-  --color-bg: #FAFAF8;
-  --color-bg-secondary: #F4F4F2;
-  --color-ink: #161616;
-  --color-muted: #666666;
-  --color-gold: #C89B63;
-  --color-gold-dark: #B98749;
-  --color-success: #2E7D62;
-  --color-danger: #C44F4F;
-  --color-hairline: rgba(22, 22, 22, 0.08);
+/* =============================================================================
+   THEME — mirrors app/lib/design-tokens.ts exactly. If you change a value,
+   change it in BOTH places (Tailwind reads @theme, JS/GSAP reads design-tokens.ts).
+   ============================================================================= */
 
+@theme {
+  /* Surfaces */
+  --color-surface-l1: #0B0C0E;
+  --color-surface-l2: #14171C;
+  --color-surface-l3: #1C2027;
+  --color-surface-l4: #F6F3EE;
+
+  /* Text */
+  --color-text-on-dark: #F2F1EE;
+  --color-text-on-dark-muted: #8B8F98;
+  --color-text-on-warm: #1A1814;
+  --color-text-on-warm-muted: #6B655C;
+
+  /* The one accent — see design-tokens.ts COLOR.accent for usage rules */
+  --color-accent: #E8A672;
+  --color-accent-dim: #E8A672A8;
+  --color-accent-faint: #E8A67233;
+
+  /* Status (functional only) */
+  --color-success: #4E8B6E;
+  --color-danger: #C4574F;
+
+  --color-hairline-dark: rgba(242, 241, 238, 0.10);
+  --color-hairline-warm: rgba(26, 24, 20, 0.10);
+
+  /* Fonts */
   --font-body: var(--font-body), sans-serif;
   --font-heading: var(--font-heading), sans-serif;
+
+  /* Radius */
+  --radius-sm: 0.5rem;
+  --radius-md: 0.875rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.75rem;
+  --radius-pill: 999px;
+
+  /* Container */
+  --container-max: 1600px;
 }
+
+/* =============================================================================
+   BASE
+   ============================================================================= */
 
 html, body {
   overflow-x: hidden;
   width: 100%;
   max-width: 100%;
-  background: var(--color-bg);
+  background: var(--color-surface-l1);
 }
 
 *, *::before, *::after {
@@ -27,13 +61,13 @@ html, body {
 }
 
 body {
-  color: var(--color-ink);
+  color: var(--color-text-on-dark);
   font-family: var(--font-body);
 }
 
 h1, h2, h3 {
   font-family: var(--font-heading), var(--font-body), sans-serif;
-  letter-spacing: -0.015em;
+  letter-spacing: -0.02em;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -46,27 +80,75 @@ h1, h2, h3 {
 }
 
 .focus-ring:focus-visible {
-  outline: 2px solid var(--color-gold);
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
 
-/* 👇 SINGLE SOURCE OF TRUTH for section containers. Always use this class only. */
+/* =============================================================================
+   CONTAINER / GRID SYSTEM
+   ============================================================================= */
+
+/* Centered container — reserved for Trust/CTA bookend scenes.
+   Most scenes should use .scene-grid instead (see Grid.tsx / SceneWrapper.tsx). */
 .container-page {
   width: 100%;
-  max-width: 1600px;
+  max-width: var(--container-max);
   margin-left: auto;
   margin-right: auto;
   padding-left: clamp(1.25rem, 4vw, 4rem);
   padding-right: clamp(1.25rem, 4vw, 4rem);
 }
 
-/* Premium glass card — used by <Card /> */
-.glass-card {
-  background: rgba(255, 255, 255, 0.75);
+/* 12-column asymmetric scene grid — see Grid.tsx for the React wrapper */
+.scene-grid {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  gap: clamp(1rem, 2.5vw, 2rem);
+  width: 100%;
+  max-width: var(--container-max);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: clamp(1.25rem, 4vw, 4rem);
+  padding-right: clamp(1.25rem, 4vw, 4rem);
+}
+
+/* =============================================================================
+   Z-INDEX SYSTEM — mirrors design-tokens.ts Z. Use these classes instead of
+   ad-hoc z-[N] utilities so stacking order stays centrally decided.
+   ============================================================================= */
+
+.z-background   { z-index: 0; }
+.z-content      { z-index: 10; }
+.z-sticky-header{ z-index: 30; }
+.z-overlay      { z-index: 40; }
+.z-page-loader  { z-index: 50; }
+.z-toast        { z-index: 60; }
+
+/* =============================================================================
+   SURFACE UTILITIES
+   ============================================================================= */
+
+.surface-l1 { background: var(--color-surface-l1); color: var(--color-text-on-dark); }
+.surface-l2 { background: var(--color-surface-l2); color: var(--color-text-on-dark); }
+.surface-l4 { background: var(--color-surface-l4); color: var(--color-text-on-warm); }
+
+/* Soft Glass Surface (L3) — the "technical" scenes. Always used with a dark
+   ancestor background showing through; never a solid opaque fill. */
+.surface-glass {
+  background: rgba(28, 32, 39, 0.68);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--color-hairline-dark);
+  color: var(--color-text-on-dark);
+}
+
+/* Glass panel for warm (L4) surfaces — lighter blur tint */
+.glass-panel-warm {
+  background: rgba(255, 255, 255, 0.55);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
-  border: 1px solid var(--color-hairline);
-  box-shadow: 0 8px 30px -12px rgba(22, 22, 22, 0.08);
+  border: 1px solid var(--color-hairline-warm);
+  color: var(--color-text-on-warm);
 }
 
 .lift-on-hover {
@@ -74,12 +156,134 @@ h1, h2, h3 {
 }
 .lift-on-hover:hover {
   transform: translateY(-4px);
-  box-shadow: 0 20px 40px -14px rgba(200, 155, 99, 0.25);
+  box-shadow: 0 20px 40px -14px rgba(0, 0, 0, 0.35);
 }
 
-.gold-gradient-text {
-  background: linear-gradient(120deg, #C89B63, #E8C89A, #B98749);
+/* =============================================================================
+   ACCENT — the single functional color. Only for AI-activity signals:
+   scan lines, match confirmations, active states. Never a decorative fill.
+   ============================================================================= */
+
+.accent-text { color: var(--color-accent); }
+
+.accent-glow-scan {
+  box-shadow: 0 0 24px 2px var(--color-accent-dim);
+}
+.accent-glow-match {
+  box-shadow: 0 0 40px 6px var(--color-accent-dim);
+}
+
+.scan-line {
+  position: relative;
+  overflow: hidden;
+}
+.scan-line::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    var(--color-accent-dim) 50%,
+    transparent 100%
+  );
+  height: 2px;
+  animation: scanSweep 2.4s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .scan-line::after { animation: none; opacity: 0.4; }
+}
+@keyframes scanSweep {
+  0%   { transform: translateY(0%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(2000%); opacity: 0; }
+}
+
+/* =============================================================================
+   GLOBAL LIVING BACKGROUND — idle-loop keyframes.
+   Continuous, ambient-only. Scene-state transitions (the lerp between
+   BackgroundSceneState values) are handled in JS by GlobalScene.tsx;
+   these keyframes are just the resting "alive" motion within any one state.
+   ============================================================================= */
+
+@keyframes livingAuroraDrift {
+  0%   { transform: translate(0, 0) scale(1); }
+  33%  { transform: translate(4%, 6%) scale(1.08); }
+  66%  { transform: translate(-3%, 3%) scale(0.96); }
+  100% { transform: translate(0, 0) scale(1); }
+}
+.living-aurora-blob {
+  animation-name: livingAuroraDrift;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+@keyframes livingParticleFloat {
+  0%   { transform: translate(0, 0); opacity: 0.3; }
+  50%  { transform: translate(1.2vw, -2.5vh); opacity: 0.75; }
+  100% { transform: translate(0, 0); opacity: 0.3; }
+}
+.living-particle {
+  animation-name: livingParticleFloat;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .living-aurora-blob,
+  .living-particle {
+    animation: none !important;
+  }
+}
+
+@keyframes gradient-scroll {
+  0% { background-position: 0 0; }
+  100% { background-position: var(--period) 0; }
+}
+
+.animated-gradient-text {
+  --period: 300px;
+  --speed: 2.8s;
+  background: repeating-linear-gradient(
+    90deg,
+    var(--grad-from) 0,
+    var(--grad-via, var(--grad-from)) 25%,
+    var(--grad-to) 50%,
+    var(--grad-via, var(--grad-to)) 75%,
+    var(--grad-from) 100%
+  );
+  background-size: var(--period) 100%;
+  animation: gradient-scroll var(--speed) linear infinite;
   -webkit-background-clip: text;
   background-clip: text;
-  color: transparent;
+  -webkit-text-fill-color: transparent;
+  will-change: background-position;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animated-gradient-text {
+    animation: none;
+  }
+}
+
+.btn-sweep {
+  position: relative;
+  isolation: isolate;
+}
+
+.btn-sweep::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background: linear-gradient(135deg, #7633e8, #e10191);
+  transform: scaleX(0);
+  transform-origin: left center;
+  transition: transform 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+  z-index: -1;
+}
+
+.btn-sweep:hover::before {
+  transform: scaleX(1);
 }

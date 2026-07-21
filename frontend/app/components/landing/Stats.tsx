@@ -1,98 +1,47 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { motion, useInView } from "framer-motion";
-import {
-  staggerContainer,
-  staggerItem,
-  viewportOnce,
-} from "@/app/lib/motion";
+import { motion, type Variants } from "framer-motion";
+import { EASE, STAGGER } from "@/app/lib/motion-tokens";
+import Heading from "@/app/components/ui/Heading";
+import StatChip from "@/app/components/ui/StatChip";
+
+const container: Variants = {
+  hidden: {},
+  visible: { transition: { staggerChildren: STAGGER.normal, delayChildren: 0.1 } },
+};
+const item: Variants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.6, ease: EASE.soft } },
+};
 
 const stats = [
-  { value: 2, suffix: "M+", label: "Photos matched" },
-  { value: 15, suffix: "K+", label: "Events powered" },
-  { value: 99.2, suffix: "%", label: "Match accuracy" },
-  { value: 4, suffix: "s", label: "Avg. match time" },
+  { value: "2M+", label: "Photos matched" },
+  { value: "15K+", label: "Events powered" },
+  { value: "99.2%", label: "Match accuracy" },
+  { value: "4s", label: "Avg. match time" },
 ];
-
-function CountUp({
-  value,
-  suffix,
-}: {
-  value: number;
-  suffix: string;
-}) {
-  const ref = useRef(null);
-  const inView = useInView(ref, {
-    once: true,
-    margin: "-80px",
-  });
-
-  const [display, setDisplay] = useState(0);
-
-  useEffect(() => {
-    if (!inView) return;
-
-    const duration = 1400;
-    const start = performance.now();
-    const isDecimal = value % 1 !== 0;
-
-    const tick = (now: number) => {
-      const progress = Math.min((now - start) / duration, 1);
-      const eased = 1 - Math.pow(1 - progress, 3);
-      const current = value * eased;
-
-      setDisplay(
-        isDecimal
-          ? Math.round(current * 10) / 10
-          : Math.round(current)
-      );
-
-      if (progress < 1) {
-        requestAnimationFrame(tick);
-      }
-    };
-
-    requestAnimationFrame(tick);
-  }, [inView, value]);
-
-  return (
-    <span ref={ref} className="tabular-nums">
-      {display}
-      {suffix}
-    </span>
-  );
-}
 
 export default function Stats() {
   return (
-    <section className="bg-[var(--color-bg)] py-20 sm:py-28">
-      <motion.div
-        initial="hidden"
-        whileInView="visible"
-        viewport={viewportOnce}
-        variants={staggerContainer}
-        className="container-page grid grid-cols-2 lg:grid-cols-4 gap-y-12 gap-x-10"
-      >
-        {stats.map((stat) => (
-          <motion.div
-            key={stat.label}
-            variants={staggerItem}
-            className="flex flex-col items-center text-center"
-          >
-            <div className="font-heading text-4xl sm:text-5xl font-semibold text-[var(--color-ink)]">
-              <CountUp
-                value={stat.value}
-                suffix={stat.suffix}
-              />
-            </div>
-
-            <p className="mt-3 text-sm text-[var(--color-muted)]">
-              {stat.label}
-            </p>
-          </motion.div>
-        ))}
-      </motion.div>
+    <section className="relative py-24 sm:py-32">
+      <div className="container-page">
+        <Heading level="h2" eyebrow="By the numbers" className="mb-14 max-w-lg">
+          Every scan, every match, at scale.
+        </Heading>
+        <motion.div
+          initial="hidden"
+          whileInView="visible"
+          viewport={{ once: true, margin: "-80px" }}
+          variants={container}
+          className="grid grid-cols-2 lg:grid-cols-4 gap-y-12 gap-x-10"
+        >
+          {stats.map((stat) => (
+            <motion.div key={stat.label} variants={item}>
+              <StatChip value={stat.value} label={stat.label} />
+            </motion.div>
+          ))}
+        </motion.div>
+      </div>
     </section>
   );
 }
