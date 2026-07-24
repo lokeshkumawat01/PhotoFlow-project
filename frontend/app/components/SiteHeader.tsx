@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { motion, AnimatePresence } from "framer-motion";
-import { Menu, X } from "lucide-react";
+import { Menu, X, ArrowRight } from "lucide-react";
 import { cn } from "@/app/lib/utils";
 
 const navLinks = [
@@ -44,22 +44,22 @@ export default function SiteHeader() {
         transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
         className={cn(
           "fixed top-0 left-0 right-0 z-50 w-full transition-colors duration-500",
-          scrolled ? "bg-black/85 backdrop-blur-xl border-b border-white/10" : "bg-transparent"
+          scrolled ? "bg-[#080724] backdrop-blur-xl border-b border-white/10" : "bg-transparent"
         )}
       >
         <div
           className="container-page flex items-center justify-between"
-          style={{ height: "clamp(56px, 9vw, 68px)" }}
+          style={{ height: "clamp(72px, 7vw, 84px)" }}
         >
           <Link href="/" className="shrink-0">
             <Image
               src="/logo.png"
               alt="PhotoFlow"
-              width={160}
-              height={40}
-              className="w-auto"
-              style={{ height: "clamp(28px, 6vw, 44px)" }}
+              width={220}
+              height={70}
               priority
+              className="w-auto object-contain"
+              style={{ height: "clamp(40px, 6vw, 60px)" }}
             />
           </Link>
 
@@ -76,7 +76,7 @@ export default function SiteHeader() {
                   <Link
                     key={link.href}
                     href={link.href}
-                    className="text-[13px] tracking-wide uppercase text-white/65 hover:text-white transition-colors whitespace-nowrap"
+                    className="text-[14px] font-semibold tracking-[0.15em] uppercase text-white hover:text-white/82 transition-all duration-300 relative after:absolute after:left-0 after:-bottom-1 after:h-px after:w-0 after:bg-white/82 hover:after:w-full after:transition-all"
                   >
                     {link.label}
                   </Link>
@@ -97,7 +97,7 @@ export default function SiteHeader() {
                 >
                   <Link
                     href="/signup"
-                    className="text-[13px] tracking-wide uppercase text-white border border-white/30 px-4 py-2 rounded-full hover:border-[var(--color-gold)] hover:text-[var(--color-gold)] transition-colors whitespace-nowrap"
+                    className="text-[14px] tracking-wide uppercase text-white border border-white/30 px-6 py-3 backdrop-blur-xl rounded-full font-semibold bg-white/5 hover:bg-white hover:text-[#080724]  hover:border-[#080724] transition-all duration-300 shadow-[0_0_30px_rgba(255,255,255,.08)] whitespace-nowrap"
                   >
                     Get started
                   </Link>
@@ -107,13 +107,13 @@ export default function SiteHeader() {
 
             {/* Touch target guaranteed 44x44px minimum, even though the icon itself is 20-22px */}
             <button
-              className="flex items-center justify-center focus-ring rounded-lg text-white -mr-1.5"
+              className="flex items-center justify-center cursor-pointer focus-ring rounded-lg text-white -mr-1.5 transition-all duration-300 hover:scale-110 active:scale-95"
               style={{ width: 44, height: 44 }}
               onClick={() => setDrawerOpen(true)}
               aria-label="Open menu"
             >
-              <Menu size={20} className="sm:hidden" />
-              <Menu size={22} className="hidden sm:block" />
+              <Menu size={28} className="sm:hidden" />
+              <Menu size={28} className="hidden sm:block hover:scale-110 transition-transform duration-300" />
             </button>
           </div>
         </div>
@@ -137,23 +137,23 @@ export default function SiteHeader() {
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
               transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-              className="fixed top-0 right-0 z-[70] h-[100dvh] w-[min(90vw,420px)] bg-[#0f0d0a] border-l border-white/10 flex flex-col"
+              className="fixed top-0 right-0 z-[70] h-[100dvh] w-[min(90vw,460px)] bg-[#0f0d0a] backdrop-blur-3xl border-l border-white/10 flex flex-col"
             >
               <div
-                className="flex items-center justify-between px-5 sm:px-8 shrink-0"
+                className="flex items-center justify-between px-5 sm:px-8 shrink-0 bg-[#080724] border-b border-white/20"
                 style={{ height: "clamp(56px, 9vw, 68px)" }}
               >
                 <Image
                   src="/logo.png"
                   alt="PhotoFlow"
-                  width={160}
-                  height={40}
-                  className="w-auto"
+                  width={200}
+                  height={70}
+                  className="h-10 w-auto object-contain"
                   style={{ height: "clamp(26px, 5.5vw, 40px)" }}
                 />
                 <button
                   onClick={() => setDrawerOpen(false)}
-                  className="flex items-center justify-center focus-ring rounded-lg text-white -mr-1.5"
+                  className="flex h-11 w-11 items-center justify-center rounded-full cursor-pointer text-white transition-colors duration-300 hover:bg-white/10"
                   style={{ width: 44, height: 44 }}
                   aria-label="Close menu"
                 >
@@ -161,28 +161,52 @@ export default function SiteHeader() {
                 </button>
               </div>
 
-              <nav className="flex-1 flex flex-col justify-center gap-1 px-5 sm:px-8 overflow-y-auto">
+              <nav className="flex-1 flex flex-col justify-center gap-1 px-5 bg-[#080724] sm:px-8 overflow-y-auto">
                 {navLinks.map((link, i) => (
                   <motion.div
                     key={link.href}
                     initial={{ opacity: 0, x: 24 }}
                     animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: 0.15 + i * 0.06, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
-                    className="border-b border-white/10 py-3.5 sm:py-4"
+                    transition={{
+                      delay: 0.15 + i * 0.06,
+                      duration: 0.4,
+                      ease: [0.16, 1, 0.3, 1],
+                    }}
+                    className="group border-b border-white/10 py-4"
                   >
                     <Link
                       href={link.href}
                       onClick={() => setDrawerOpen(false)}
-                      className="font-heading text-white hover:text-[var(--color-gold)] transition-colors"
-                      style={{ fontSize: "clamp(1.25rem, 5vw, 1.875rem)" }}
+                      className="flex items-center justify-between"
                     >
-                      {link.label}
+                      <span
+                        className="font-heading text-white text-[clamp(1.5rem,4vw,2.2rem)] font-semibold transition-all duration-300] group-hover:translate-x-2"
+                      >
+                        {link.label}
+                      </span>
+
+                      <span
+                        className="
+                          opacity-0
+                          -translate-x-2
+                          transition-all
+                          duration-300
+                          group-hover:opacity-100
+                          group-hover:translate-x-0
+                          items-center
+                        "
+                      >
+                        <ArrowRight
+                          size={28}
+                          className="text-white/50 transition-all duration-300 group-hover:translate-x-1"
+                        />
+                      </span>
                     </Link>
                   </motion.div>
                 ))}
               </nav>
 
-              <div className="px-5 sm:px-8 pb-6 sm:pb-8 shrink-0">
+              <div className="px-5 sm:px-8 p-6 items-center sm:pb-8 shrink-0 bg-[#080724]/75 backdrop-blur-2xl border-t border-white/5">
                 <motion.div
                   initial={{ opacity: 0, x: 24 }}
                   animate={{ opacity: 1, x: 0 }}
@@ -191,9 +215,47 @@ export default function SiteHeader() {
                   <Link
                     href="/signup"
                     onClick={() => setDrawerOpen(false)}
-                    className="block text-center text-sm uppercase tracking-wide text-white bg-[var(--color-gold)] px-5 py-3.5 rounded-full hover:bg-[var(--color-gold-dark)] transition-colors"
+                    className="
+                      group
+                      flex
+                      items-center
+                      justify-center
+                      gap-2
+
+                      w-full
+
+                      rounded-full
+
+                      bg-gradient-to-r
+                      from-[#F5C542]
+                      via-[#EAB308]
+                      to-[#C98A00]
+
+                      py-4
+
+                      text-[15px]
+                      font-semibold
+                      tracking-wide
+                      text-black
+
+                      transition-all
+                      duration-300
+
+                      hover:scale-[1.02]
+                      hover:shadow-[0_12px_35px_rgba(234,179,8,.35)]
+                      active:scale-[0.98]
+                    "
                   >
-                    Get started
+                    <span>Get Started</span>
+
+                    <ArrowRight
+                      size={18}
+                      className="
+                        transition-transform
+                        duration-300
+                        group-hover:translate-x-1
+                      "
+                    />
                   </Link>
                 </motion.div>
               </div>

@@ -194,12 +194,17 @@ export const RIBBON_SPECTRUM = {
   purple: "#8B4CE8",
   blue: "#4C6FE8",
   teal: "#34D8C8",
+  gold: "#E8B44C",
+  green: "#4CE88B",
+  coral: "#E86B4C",
 } as const;
 
-// Convenience: an ordered array for gradient stops / cycling through chips
 export const RIBBON_SPECTRUM_ORDER = [
   RIBBON_SPECTRUM.magenta,
   RIBBON_SPECTRUM.purple,
   RIBBON_SPECTRUM.blue,
   RIBBON_SPECTRUM.teal,
+  RIBBON_SPECTRUM.gold,
+  RIBBON_SPECTRUM.green,
+  RIBBON_SPECTRUM.coral,
 ] as const;

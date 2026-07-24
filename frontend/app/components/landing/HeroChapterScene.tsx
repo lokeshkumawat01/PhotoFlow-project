@@ -8,6 +8,8 @@ const HALF_STEP_DURATION = 6;
 const LAYER_STAGGER = 0.5;
 const ROTATE_AMPLITUDE = 1.5;
 const SCALE_TO = 0.92;
+const CYCLE_DURATION = HALF_STEP_DURATION * 2;
+const EPOCH_MS = 0;
 
 export default function HeroChapterScene({ children }: { children: ReactNode }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -27,26 +29,33 @@ export default function HeroChapterScene({ children }: { children: ReactNode }) 
     startedRef.current = true;
     ensureGsapRegistered();
 
-    // No scroll/hover dependency here at all: these 17 timelines are
-    // created with no scrollTrigger and GSAP timelines autoplay on
-    // creation by default, so rotation/scale genuinely starts the moment
-    // the SVG's layers are parsed — same for every visitor, first load.
-    // The ONLY thing that's scroll-linked is the background's vertical
-    // drift below (that one's meant to move with scroll).
     const ctx = gsap.context(() => {
       layersRef.current.forEach((g, i) => {
-        const tl = gsap.timeline({ repeat: -1, delay: i * LAYER_STAGGER });
-        tl.to(g, {
+        // FIX: no more wrapping gsap.timeline() around a single tween.
+        // A plain gsap.to(..., {yoyo:true, repeat:-1}) is GSAP's own
+        // standard pattern for an infinite back-and-forth oscillation,
+        // and .totalTime() seeking on a repeating+yoyo-ing TWEEN is more
+        // robust than .time() seeking on a TIMELINE wrapping one tween —
+        // the extra timeline layer was pure indirection with no benefit
+        // here, and is the most likely source of the seam at the
+        // reversal/repeat boundary.
+        // force3D ensures this stays on its own GPU-composited layer
+        // instead of triggering a main-thread layout recalculation on
+        // every frame, which is the other common cause of jank exactly
+        // at a direction change (transform-box: fill-box on SVG <g>
+        // elements can be expensive to recompute repeatedly otherwise).
+        const tween = gsap.to(g, {
           rotate: ROTATE_AMPLITUDE,
           scale: SCALE_TO,
           duration: HALF_STEP_DURATION,
           ease: "sine.inOut",
-        }).to(g, {
-          rotate: 0,
-          scale: 1,
-          duration: HALF_STEP_DURATION,
-          ease: "sine.inOut",
+          yoyo: true,
+          repeat: -1,
+          force3D: true,
         });
+
+        const elapsedSeconds = (Date.now() - EPOCH_MS) / 1000 + i * LAYER_STAGGER;
+        tween.totalTime(elapsedSeconds % CYCLE_DURATION);
       });
 
       gsap.to(bgGroupRef.current, {
@@ -75,22 +84,8 @@ export default function HeroChapterScene({ children }: { children: ReactNode }) 
   return (
     <div ref={containerRef} className="relative">
       <div ref={bgGroupRef} className="absolute inset-0 z-background overflow-hidden pointer-events-none">
-        {/*
-          FIX: this wrapper used to be "absolute top-1/2 left-1/2
-          -translate-x/y-1/2" measured against the WHOLE HeroChapterScene
-          container — which is however tall Hero + Stats together are,
-          not just Hero. So "centered" meant centered in that combined
-          height, which visually reads as "too low" / off-center relative
-          to Hero itself.
-
-          Fix: pin a sub-wrapper to exactly 100dvh at the TOP of the scene
-          (i.e. Hero's own height) and center within THAT. The outer
-          bgGroupRef still spans the whole scene and still gets the
-          scroll-linked y drift above, so the parallax behavior is
-          unchanged — only the ribbon's resting center point changes.
-        */}
-        <div className="absolute top-0 left-0 w-full h-[100dvh] opacity-100 flex items-center justify-center">
-          <div style={{ width: "70vw", mixBlendMode: "screen" }}>
+        <div className="absolute top-0 left-0 w-full h-[100dvh] flex items-center justify-center">
+          <div style={{ width: "88vw"}}>
             <InfinityRibbon
               className="w-full h-auto block [&_svg]:w-full [&_svg]:h-auto"
               onLayersReady={handleLayersReady}

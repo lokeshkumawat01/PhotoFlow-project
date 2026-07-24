@@ -244,14 +244,14 @@ h1, h2, h3 {
 
 .animated-gradient-text {
   --period: 300px;
-  --speed: 2.8s;
+  --speed: 3.4s;
   background: repeating-linear-gradient(
     90deg,
-    var(--grad-from) 0,
-    var(--grad-via, var(--grad-from)) 25%,
-    var(--grad-to) 50%,
-    var(--grad-via, var(--grad-to)) 75%,
-    var(--grad-from) 100%
+    var(--grad-from, var(--color-text-on-dark)) 0,
+    var(--grad-via, var(--grad-from, var(--color-text-on-dark))) 25%,
+    var(--grad-to, var(--color-text-on-dark)) 50%,
+    var(--grad-via, var(--grad-to, var(--color-text-on-dark))) 75%,
+    var(--grad-from, var(--color-text-on-dark)) 100%
   );
   background-size: var(--period) 100%;
   animation: gradient-scroll var(--speed) linear infinite;
@@ -286,4 +286,15 @@ h1, h2, h3 {
 
 .btn-sweep:hover::before {
   transform: scaleX(1);
+}
+
+@keyframes chipFloat {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+.chip-float {
+  animation: chipFloat 5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .chip-float { animation: none; }
 }
